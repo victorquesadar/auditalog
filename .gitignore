@@ -1,0 +1,42 @@
+# Entorno
+.env
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# SQLite (no versionar bases grandes; se recrean con scripts/)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+!data/samples/*.db  # bases pequeñas de ejemplo sí pueden ir
+
+# Logs crudos y datos grandes
+data/raw/
+data/loghub/
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Pruebas y coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Builds
+dist/
+build/
+*.egg-info/
+
+# Docker
+docker-compose.override.yml

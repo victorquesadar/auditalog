@@ -109,10 +109,10 @@ Python 3.11 · FastAPI · Redis 7 · MongoDB 7 (Atlas, cluster AWS Oregon) · SQ
 
 | Rol | Nombre | GitHub |
 |---|---|---|
-| Backend / Mongo | *por completar* | `@user1` |
-| Workers / Redis | *por completar* | `@user2` |
-| API / Dashboard | *por completar* | `@user3` |
-| SQLite / Export | *por completar* | `@user4` |
+| Backend / Mongo | Eithel Núñez | [@Eithel2003](https://github.com/Eithel2003) |
+| Workers / Redis | Víctor Quesada | [@victorquesadar](https://github.com/victorquesadar) |
+| API / Dashboard | Andrey Ortiz | [@andreyortizcr](https://github.com/andreyortizcr) |
+| SQLite / Export | Angelly Cortés | [@Angelly15](https://github.com/Angelly15) |
 
 Cada integrante entiende y puede explicar su parte del código, incluido el que se produjo con ayuda de IA.
 

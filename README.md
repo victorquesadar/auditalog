@@ -112,7 +112,7 @@ Python 3.11 · FastAPI · Redis 7 · MongoDB 7 (Atlas, cluster AWS Oregon) · SQ
 | Backend / Mongo | Eithel Núñez | [@Eithel2003](https://github.com/Eithel2003) |
 | Workers / Redis | Víctor Quesada | [@victorquesadar](https://github.com/victorquesadar) |
 | API / Dashboard | Andrey Ortiz | [@andreyortizcr](https://github.com/andreyortizcr) |
-| SQLite / Export | Angelly Cortés | [@Angelly15](https://github.com/Angelly15) |
+| SQLite / Export | Angelly Cortes Herrera| [@Angelly15](https://github.com/Angelly15) |
 
 Cada integrante entiende y puede explicar su parte del código, incluido el que se produjo con ayuda de IA.
 

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Alertas · AuditaLog{% endblock %}
+
+{% block content %}
+<h1>Alertas</h1>
+<p id="total" class="muted">—</p>
+
+<table class="data">
+    <thead>
+        <tr>
+            <th>Hora</th><th>Severidad</th><th>Regla</th><th>Título</th>
+            <th>Evidencia</th><th>Estado</th>
+        </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="6">cargando…</td></tr></tbody>
+</table>
+
+<script>
+async function load() {
+    const r = await fetch('/api/alerts?limit=100');
+    const d = await r.json();
+    document.getElementById('total').textContent = `${d.total} alertas registradas`;
+
+    const tbody = document.getElementById('rows');
+    if (!d.items.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="muted">Sin alertas</td></tr>';
+        return;
+    }
+    tbody.innerHTML = d.items.map(a => {
+        const ev = a.evidence || {};
+        const extras = Object.entries(ev)
+            .filter(([k]) => k !== 'event_ids')
+            .map(([k, v]) => `<b>${k}:</b> ${JSON.stringify(v)}`)
+            .join(' · ');
+        return `
+            <tr>
+                <td>${new Date(a.fired_at).toLocaleString()}</td>
+                <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
+                <td>${a.rule_id}</td>
+                <td>${a.title}</td>
+                <td class="small">${extras}</td>
+                <td>${a.status}</td>
+            </tr>`;
+    }).join('');
+}
+load();
+setInterval(load, 15000);
+</script>
+{% endblock %}

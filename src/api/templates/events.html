@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Eventos · AuditaLog{% endblock %}
+
+{% block content %}
+<h1>Eventos</h1>
+
+<form id="filters" class="filters">
+    <label>Fuente
+        <select name="source">
+            <option value="">todas</option>
+            <option value="auth.log">auth.log</option>
+            <option value="access.log">access.log</option>
+            <option value="app">app</option>
+        </select>
+    </label>
+    <label>Severidad
+        <select name="severity">
+            <option value="">todas</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="critical">critical</option>
+        </select>
+    </label>
+    <label>IP <input type="text" name="ip" placeholder="192.0.2.45"></label>
+    <label>Usuario <input type="text" name="user" placeholder="root"></label>
+    <button type="submit">Aplicar</button>
+</form>
+
+<p id="total" class="muted">—</p>
+
+<table class="data">
+    <thead>
+        <tr>
+            <th>Hora</th><th>Fuente</th><th>Severidad</th><th>Acción</th>
+            <th>Usuario</th><th>IP</th><th>Host</th><th>Raw</th>
+        </tr>
+    </thead>
+    <tbody id="rows"><tr><td colspan="8">cargando…</td></tr></tbody>
+</table>
+
+<div class="pager">
+    <button id="prev">« anterior</button>
+    <span id="page">1</span>
+    <button id="next">siguiente »</button>
+</div>
+
+<script>
+let page = 0;
+const PAGE_SIZE = 50;
+
+function qs() {
+    const form = document.getElementById('filters');
+    const data = new FormData(form);
+    const p = new URLSearchParams();
+    for (const [k, v] of data) if (v) p.set(k, v);
+    p.set('limit', PAGE_SIZE);
+    p.set('skip', page * PAGE_SIZE);
+    return p.toString();
+}
+
+async function load() {
+    const r = await fetch('/api/events?' + qs());
+    const d = await r.json();
+    document.getElementById('total').textContent =
+        `${d.total} eventos en total · página ${page + 1} de ${Math.max(1, Math.ceil(d.total / PAGE_SIZE))}`;
+
+    const tbody = document.getElementById('rows');
+    if (!d.items.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="muted">Sin eventos</td></tr>';
+        return;
+    }
+    tbody.innerHTML = d.items.map(e => `
+        <tr>
+            <td>${new Date(e.ts).toLocaleString()}</td>
+            <td>${e.source}</td>
+            <td><span class="badge sev-${e.severity}">${e.severity}</span></td>
+            <td>${e.action}</td>
+            <td>${e.user || '—'}</td>
+            <td>${e.ip || '—'}</td>
+            <td>${e.host || '—'}</td>
+            <td><code class="raw">${(e.raw || '').substring(0, 120)}</code></td>
+        </tr>
+    `).join('');
+    document.getElementById('page').textContent = page + 1;
+}
+
+document.getElementById('filters').addEventListener('submit', (e) => {
+    e.preventDefault(); page = 0; load();
+});
+document.getElementById('prev').addEventListener('click', () => { if (page > 0) { page--; load(); } });
+document.getElementById('next').addEventListener('click', () => { page++; load(); });
+
+load();
+</script>
+{% endblock %}

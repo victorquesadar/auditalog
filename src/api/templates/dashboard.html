@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · AuditaLog{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<section class="kpi-grid">
+    <div class="kpi"><div class="kpi-label">Eventos última hora</div>
+        <div class="kpi-value" id="k-hour">—</div></div>
+    <div class="kpi"><div class="kpi-label">Eventos último día</div>
+        <div class="kpi-value" id="k-day">—</div></div>
+    <div class="kpi"><div class="kpi-label">Eventos totales</div>
+        <div class="kpi-value" id="k-total">—</div></div>
+    <div class="kpi warn"><div class="kpi-label">Alertas abiertas</div>
+        <div class="kpi-value" id="k-open">—</div></div>
+    <div class="kpi crit"><div class="kpi-label">Alertas críticas</div>
+        <div class="kpi-value" id="k-crit">—</div></div>
+</section>
+
+<section class="charts">
+    <div class="card">
+        <h2>Top IPs con más fallos de login</h2>
+        <canvas id="chart-ips" height="180"></canvas>
+    </div>
+    <div class="card">
+        <h2>Eventos por severidad</h2>
+        <canvas id="chart-sev" height="180"></canvas>
+    </div>
+</section>
+
+<section>
+    <h2>Últimas alertas</h2>
+    <table class="data">
+        <thead><tr><th>Hora</th><th>Severidad</th><th>Regla</th><th>Título</th><th>Estado</th></tr></thead>
+        <tbody id="alerts-body"><tr><td colspan="5">cargando…</td></tr></tbody>
+    </table>
+</section>
+
+<p class="muted">Auto-refresco cada 30 s · <span id="cache-status">—</span></p>
+
+<script>
+let ipsChart, sevChart;
+
+async function refresh() {
+    const r = await fetch('/api/dashboard');
+    const d = await r.json();
+
+    document.getElementById('k-hour').textContent = d.events_last_hour;
+    document.getElementById('k-day').textContent = d.events_last_day;
+    document.getElementById('k-total').textContent = d.events_total;
+    document.getElementById('k-open').textContent = d.alerts_open;
+    document.getElementById('k-crit').textContent = d.alerts_critical;
+    document.getElementById('cache-status').textContent =
+        'caché: ' + (r.headers.get('X-Cache') || 'n/a');
+
+    // Chart: top IPs
+    const ipsData = {
+        labels: d.top_ips.map(x => x.ip || '(sin IP)'),
+        datasets: [{
+            label: 'Fallos',
+            data: d.top_ips.map(x => x.count),
+            backgroundColor: '#e76f51',
+        }],
+    };
+    if (ipsChart) { ipsChart.data = ipsData; ipsChart.update(); }
+    else {
+        ipsChart = new Chart(document.getElementById('chart-ips'), {
+            type: 'bar', data: ipsData,
+            options: {indexAxis: 'y', plugins: {legend: {display: false}}},
+        });
+    }
+
+    // Chart: severidad
+    const sevData = {
+        labels: Object.keys(d.by_severity),
+        datasets: [{
+            data: Object.values(d.by_severity),
+            backgroundColor: ['#2a9d8f', '#f4a261', '#e63946'],
+        }],
+    };
+    if (sevChart) { sevChart.data = sevData; sevChart.update(); }
+    else {
+        sevChart = new Chart(document.getElementById('chart-sev'), {
+            type: 'doughnut', data: sevData,
+        });
+    }
+
+    // Alertas recientes
+    const a = await (await fetch('/api/alerts?limit=10')).json();
+    const tbody = document.getElementById('alerts-body');
+    if (!a.items.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="muted">Sin alertas aún</td></tr>';
+    } else {
+        tbody.innerHTML = a.items.map(x => `
+            <tr>
+                <td>${new Date(x.fired_at).toLocaleString()}</td>
+                <td><span class="badge sev-${x.severity}">${x.severity}</span></td>
+                <td>${x.rule_id}</td>
+                <td>${x.title}</td>
+                <td>${x.status}</td>
+            </tr>`).join('');
+    }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+{% endblock %}

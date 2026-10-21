@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}AuditaLog{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<nav class="topbar">
+    <a href="/" class="brand">🛡️ AuditaLog</a>
+    <div class="links">
+        <a href="/">Dashboard</a>
+        <a href="/eventos">Eventos</a>
+        <a href="/alertas">Alertas</a>
+        <a href="/docs">API</a>
+    </div>
+    <div class="meta">
+        <span id="health-dot" class="dot"></span>
+        <span id="health-label">verificando…</span>
+    </div>
+</nav>
+
+<main class="container">
+{% block content %}{% endblock %}
+</main>
+
+<footer>
+    AuditaLog · Grupo 04 · Tópicos Avanzados de BD · UNA · v0.2.0
+</footer>
+
+<script>
+async function checkHealth() {
+    try {
+        const r = await fetch('/api/health');
+        const d = await r.json();
+        const ok = d.mongo === 'ok' && d.redis === 'ok';
+        document.getElementById('health-dot').className = 'dot ' + (ok ? 'ok' : 'err');
+        document.getElementById('health-label').textContent =
+            ok ? 'motores OK' : (d.mongo !== 'ok' ? 'Mongo caído' : 'Redis caído');
+    } catch (e) {
+        document.getElementById('health-dot').className = 'dot err';
+        document.getElementById('health-label').textContent = 'API caída';
+    }
+}
+checkHealth();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>

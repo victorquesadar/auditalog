@@ -1,0 +1,118 @@
+/* AuditaLog · estilos del dashboard */
+:root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --fg: #1a2238;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --brand: #1a2238;
+    --accent: #2a9d8f;
+    --warn: #f4a261;
+    --crit: #e63946;
+    --info: #4a90e2;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+}
+
+/* Nav */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .75rem 1.5rem;
+    background: var(--brand); color: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,.1);
+}
+.topbar .brand {
+    font-weight: 700; font-size: 1.1rem; color: white; text-decoration: none;
+}
+.topbar .links a {
+    color: white; text-decoration: none; margin-left: 1rem; opacity: .85;
+}
+.topbar .links a:hover { opacity: 1; text-decoration: underline; }
+.topbar .meta { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
+.dot.ok { background: #22c55e; }
+.dot.err { background: #ef4444; }
+
+/* Container */
+.container { max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }
+h1 { margin-top: 0; font-size: 1.75rem; }
+h2 { font-size: 1.2rem; margin-top: 0; }
+
+/* KPI grid */
+.kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 1rem; margin-bottom: 2rem;
+}
+.kpi {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; text-align: center;
+}
+.kpi.warn { border-left: 4px solid var(--warn); }
+.kpi.crit { border-left: 4px solid var(--crit); }
+.kpi-label { font-size: .8rem; color: var(--muted); text-transform: uppercase; }
+.kpi-value { font-size: 2rem; font-weight: 700; margin-top: .5rem; }
+
+/* Cards */
+.charts { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 2rem; }
+@media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+.card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem;
+}
+
+/* Tables */
+table.data {
+    width: 100%; background: var(--card); border-collapse: collapse;
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    font-size: .9rem;
+}
+table.data th, table.data td { padding: .6rem .75rem; text-align: left; border-bottom: 1px solid var(--border); }
+table.data th { background: #fafbfc; font-weight: 600; }
+table.data tr:last-child td { border-bottom: none; }
+table.data tr:hover { background: #f9fafb; }
+code.raw { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: .8rem; }
+
+/* Badges */
+.badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: .75rem; font-weight: 600; text-transform: uppercase;
+}
+.sev-info { background: #dbeafe; color: #1e40af; }
+.sev-warn { background: #fef3c7; color: #92400e; }
+.sev-critical { background: #fee2e2; color: #991b1b; }
+
+/* Filters */
+.filters {
+    display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin-bottom: 1rem;
+    padding: 1rem; background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+}
+.filters label { display: flex; flex-direction: column; font-size: .85rem; color: var(--muted); }
+.filters input, .filters select {
+    padding: .4rem .6rem; border: 1px solid var(--border); border-radius: 4px; font: inherit;
+}
+.filters button {
+    padding: .5rem 1rem; background: var(--accent); color: white; border: none;
+    border-radius: 4px; cursor: pointer; font: inherit;
+}
+.filters button:hover { opacity: .9; }
+
+/* Pager */
+.pager { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1rem; }
+.pager button { padding: .4rem 1rem; cursor: pointer; }
+
+.muted { color: var(--muted); font-size: .9rem; }
+.small { font-size: .8rem; color: var(--muted); }
+
+/* Footer */
+footer {
+    text-align: center; padding: 2rem; color: var(--muted); font-size: .85rem;
+    border-top: 1px solid var(--border); margin-top: 2rem;
+}

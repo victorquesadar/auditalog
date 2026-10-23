@@ -14,15 +14,16 @@ Endpoints:
     GET  /api/health         → Ping de los 3 motores
 """
 from __future__ import annotations
+
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-import redis
 
+import redis
 from bson import ObjectId
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -48,7 +49,7 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 _mongo: Optional[MongoClient] = None
 _redis: Optional[redis.Redis] = None
 
-# Conexión para el cliente de mongo
+
 def get_mongo() -> MongoClient:
     global _mongo
     if _mongo is None:
@@ -321,6 +322,56 @@ def view_alerts(request: Request):
 @app.get("/ingesta", response_class=HTMLResponse)
 def view_ingest(request: Request):
     return TEMPLATES.TemplateResponse(request, "ingesta.html")
+
+
+@app.get("/exportar", response_class=HTMLResponse)
+def view_export(request: Request):
+    return TEMPLATES.TemplateResponse(request, "exportar.html")
+
+
+# ----------------------------------------------------------------------------
+# POST /api/export/sqlite — genera y devuelve el .db de evidencia
+# ----------------------------------------------------------------------------
+
+@app.post("/api/export/sqlite")
+def api_export_sqlite(
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+):
+    """Genera un .db SQLite con events + alerts y lo devuelve para descarga."""
+    import os
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+    from src.exporter.sqlite_exporter import export as _export
+
+    def _parse(s: str) -> datetime:
+        if len(s) == 10:
+            return datetime.fromisoformat(s + "T00:00:00+00:00")
+        return datetime.fromisoformat(s)
+
+    from_dt = _parse(from_date) if from_date else None
+    to_dt = _parse(to_date) if to_date else None
+
+    export_dir = _Path(os.getenv("SQLITE_EXPORT_DIR", "./data/exports"))
+    tag = (from_dt or _dt.now(timezone.utc)).strftime("%Y-%m")
+    stamp = _dt.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_path = export_dir / f"evidencia_{tag}_{stamp}.db"
+
+    try:
+        result = _export(from_dt, to_dt, out_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error exportando: {e}")
+
+    return FileResponse(
+        path=result["path"],
+        filename=out_path.name,
+        media_type="application/x-sqlite3",
+        headers={
+            "X-Export-Events": str(result["events"]),
+            "X-Export-Alerts": str(result["alerts"]),
+            "X-Export-SHA256": result["sha256"],
+        },
+    )
 
 
 # ----------------------------------------------------------------------------

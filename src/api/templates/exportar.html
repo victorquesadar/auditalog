@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Exportar evidencia · AuditaLog{% endblock %}
+
+{% block content %}
+<h1>Exportar paquete de evidencia</h1>
+<p class="muted" style="max-width:720px;">
+Genera un archivo <code>.db</code> SQLite autocontenido con todos los eventos y
+alertas del período que elijas. El auditor lo abre con <b>DB Browser for SQLite</b>,
+<b>DBeaver</b> o cualquier cliente SQL — no necesita acceso al servidor ni a MongoDB.
+</p>
+
+<section class="card" style="max-width:720px; margin-bottom:1.5rem;">
+    <h2>Período</h2>
+    <form id="export-form">
+        <div class="form-grid">
+            <label>Desde (opcional)
+                <input type="date" name="from">
+            </label>
+            <label>Hasta (opcional)
+                <input type="date" name="to">
+            </label>
+            <label class="full">
+                <input type="checkbox" id="all-history" checked style="margin-right:.4rem;">
+                Exportar todo el histórico (ignora las fechas)
+            </label>
+        </div>
+        <div class="form-actions" style="margin-top:1rem;">
+            <button type="submit" class="btn-primary" id="btn-export">
+                ⬇ Generar y descargar .db
+            </button>
+        </div>
+        <div id="export-result" class="result"></div>
+    </form>
+</section>
+
+<section class="card" style="max-width:720px;">
+    <h2>Qué incluye el paquete</h2>
+    <ul style="padding-left:1.25rem; margin: 0 0 1rem; font-size:.9rem;">
+        <li><b>Tabla <code>events</code></b> — todos los eventos del período con sus índices</li>
+        <li><b>Tabla <code>alerts</code></b> — alertas disparadas en el período</li>
+        <li><b>Tabla <code>package_meta</code></b> — fecha de generación, período, cantidades y <b>SHA-256</b> de integridad</li>
+    </ul>
+    <h2 style="margin-top:1rem;">Vistas pregeneradas para el auditor</h2>
+    <ul style="padding-left:1.25rem; margin: 0; font-size:.9rem;">
+        <li><code>v_fuerza_bruta</code> — IPs con ≥5 fallos de login</li>
+        <li><code>v_cambios_config</code> — modificaciones a archivos de configuración</li>
+        <li><code>v_accesos_offhours</code> — logins entre 22:00 y 06:00</li>
+        <li><code>v_resumen_por_dia</code> — eventos/críticos/warnings por fecha</li>
+    </ul>
+    <p class="muted" style="margin-top:1rem; font-size:.85rem;">
+        El archivo tiene <code>PRAGMA journal_mode = WAL</code> activado para lectura concurrente.
+    </p>
+</section>
+
+<script>
+const form = document.getElementById('export-form');
+const allHist = document.getElementById('all-history');
+const btn = document.getElementById('btn-export');
+const result = document.getElementById('export-result');
+
+allHist.addEventListener('change', () => {
+    const disabled = allHist.checked;
+    form.elements['from'].disabled = disabled;
+    form.elements['to'].disabled = disabled;
+});
+allHist.dispatchEvent(new Event('change'));
+
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.textContent = '⏳ Generando...';
+    result.className = 'result';
+    result.textContent = 'Leyendo Mongo y escribiendo SQLite...';
+
+    const data = new FormData(form);
+    const params = new URLSearchParams();
+    if (!allHist.checked) {
+        if (data.get('from')) params.set('from', data.get('from'));
+        if (data.get('to')) params.set('to', data.get('to'));
+    }
+
+    try {
+        const resp = await fetch('/api/export/sqlite?' + params, { method: 'POST' });
+        if (!resp.ok) {
+            const err = await resp.json();
+            result.className = 'result err';
+            result.innerHTML = `❌ Error (HTTP ${resp.status})<pre>${JSON.stringify(err, null, 2)}</pre>`;
+            return;
+        }
+        const events = resp.headers.get('X-Export-Events');
+        const alerts = resp.headers.get('X-Export-Alerts');
+        const sha = (resp.headers.get('X-Export-SHA256') || '').substring(0, 16);
+
+        // Descargar el blob
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const cd = resp.headers.get('content-disposition') || '';
+        const match = cd.match(/filename="?([^"]+)"?/);
+        a.download = match ? match[1] : 'evidencia.db';
+        a.href = url; a.click();
+        URL.revokeObjectURL(url);
+
+        result.className = 'result ok';
+        result.innerHTML = `✅ <b>Paquete generado</b><br>` +
+                           `• <b>${events}</b> eventos<br>` +
+                           `• <b>${alerts}</b> alertas<br>` +
+                           `• SHA-256: <code>${sha}...</code><br>` +
+                           `• Tamaño: <b>${(blob.size / 1024).toFixed(1)} KB</b><br>` +
+                           `El archivo se descargó. Ábrelo con DB Browser for SQLite.`;
+    } catch (err) {
+        result.className = 'result err';
+        result.textContent = 'Error de red: ' + err;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '⬇ Generar y descargar .db';
+    }
+});
+</script>
+{% endblock %}

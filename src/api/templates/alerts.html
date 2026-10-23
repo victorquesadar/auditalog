@@ -168,12 +168,12 @@ async function load() {
         let actions = '';
         if (a.status === 'open') {
             actions = `
-                <button class="btn-action ack" onclick="updateAlert('${a._id}', 'acknowledged')">Reconocer</button>
-                <button class="btn-action close" onclick="updateAlert('${a._id}', 'closed')">Cerrar</button>`;
+                <button class="btn-action ack" title="Marcar la alerta como reconocida" onclick="updateAlert('${a._id}', 'acknowledged')">✓ Reconocer</button>
+                <button class="btn-action close" title="Cerrar la alerta" onclick="updateAlert('${a._id}', 'closed')">✕ Cerrar</button>`;
         } else if (a.status === 'acknowledged') {
-            actions = `<button class="btn-action close" onclick="updateAlert('${a._id}', 'closed')">Cerrar</button>`;
+            actions = `<button class="btn-action close" title="Cerrar la alerta" onclick="updateAlert('${a._id}', 'closed')">✕ Cerrar</button>`;
         } else {
-            actions = `<button class="btn-action" onclick="updateAlert('${a._id}', 'open')">Reabrir</button>`;
+            actions = `<button class="btn-action reopen" title="Volver a abrir la alerta" onclick="updateAlert('${a._id}', 'open')">↺ Reabrir</button>`;
         }
 
         return `

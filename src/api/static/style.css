@@ -261,6 +261,9 @@ table.data.clickable tbody tr:hover { background: #f1f5f9; }
 .btn-action.ack:hover { background: var(--warn-bg); }
 .btn-action.close { color: var(--accent); border-color: #a7f3d0; background: #f0fdf4; }
 .btn-action.close:hover { background: #dcfce7; }
+.btn-action.reopen { color: var(--fg); border-style: dashed; }
+.btn-action.reopen:hover { background: #eff6ff; border-color: #93c5fd; }
+.btn-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ================================================================
    Paginación

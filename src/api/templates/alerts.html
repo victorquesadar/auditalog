@@ -2,36 +2,180 @@
 {% block title %}Alertas · AuditaLog{% endblock %}
 
 {% block content %}
-<h1>Alertas</h1>
+<div class="page-header">
+    <h1>Alertas</h1>
+    <div class="page-header-right">
+        <button type="button" class="btn-secondary" id="btn-refresh" onclick="load()">↻ Actualizar</button>
+        <button type="button" class="btn-primary" onclick="openCreateAlert()">+ Agregar alerta</button>
+    </div>
+</div>
 <p id="total" class="muted">—</p>
+
+<form class="filters">
+    <label>Estado
+        <select id="f-status">
+            <option value="">todos</option>
+            <option value="open" selected>abiertas</option>
+            <option value="acknowledged">reconocidas</option>
+            <option value="closed">cerradas</option>
+        </select>
+    </label>
+    <label>Severidad
+        <select id="f-severity">
+            <option value="">todas</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="critical">critical</option>
+        </select>
+    </label>
+    <button type="button" onclick="load()">Aplicar</button>
+</form>
 
 <table class="data">
     <thead>
         <tr>
             <th>Hora</th><th>Severidad</th><th>Regla</th><th>Título</th>
-            <th>Evidencia</th><th>Estado</th>
+            <th>Evidencia</th><th>Estado</th><th>Acciones</th>
         </tr>
     </thead>
-    <tbody id="rows"><tr><td colspan="6">cargando…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="7">cargando…</td></tr></tbody>
 </table>
+
+<p id="msg" class="muted"></p>
+
+<!-- Modal: Crear alerta -->
+<div class="modal" id="modal-create-alert" style="display:none; position:fixed; inset:0; z-index:1000; background:rgba(15,23,42,.5); align-items:center; justify-content:center; padding:1rem;">
+    <div class="modal-box" style="background:white; border-radius:12px; width:100%; max-width:580px; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <div class="modal-header">
+            <h2>Agregar alerta</h2>
+            <button type="button" class="btn-close" onclick="closeAlertModal()">×</button>
+        </div>
+        <form id="create-alert-form" class="modal-body">
+            <div class="form-grid">
+                <label>Regla*
+                    <input type="text" name="rule_id" required value="manual_v1" placeholder="bruteforce_v1, offhours_v1, manual_v1">
+                </label>
+                <label>Severidad*
+                    <select name="severity" required>
+                        <option value="info">info</option>
+                        <option value="warn" selected>warn</option>
+                        <option value="critical">critical</option>
+                    </select>
+                </label>
+                <label class="full">Título*
+                    <input type="text" name="title" required placeholder="Posible fuerza bruta desde 203.0.113.5">
+                </label>
+                <label class="full">Evidencia (JSON)
+                    <textarea name="evidence" rows="3" placeholder='{"ip":"203.0.113.5","fails":5}'></textarea>
+                </label>
+                <label>Estado inicial
+                    <select name="status">
+                        <option value="open" selected>abierta</option>
+                        <option value="acknowledged">reconocida</option>
+                        <option value="closed">cerrada</option>
+                    </select>
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeAlertModal()">Cancelar</button>
+                <button type="submit" class="btn-primary">Crear alerta</button>
+            </div>
+            <div id="create-alert-result" class="result"></div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openCreateAlert() {
+    const el = document.getElementById('modal-create-alert');
+    el.style.display = 'flex';
+    document.getElementById('create-alert-result').textContent = '';
+    document.getElementById('create-alert-result').className = 'result';
+}
+function closeAlertModal() {
+    document.getElementById('modal-create-alert').style.display = 'none';
+}
+
+document.getElementById('create-alert-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    const payload = {};
+    for (const k in data) if (data[k]) payload[k] = data[k];
+    if (payload.evidence) {
+        try { payload.evidence = JSON.parse(payload.evidence); }
+        catch {
+            const r = document.getElementById('create-alert-result');
+            r.className = 'result err';
+            r.textContent = '❌ El campo "evidence" debe ser JSON válido';
+            return;
+        }
+    } else {
+        payload.evidence = {};
+    }
+    const result = document.getElementById('create-alert-result');
+    result.className = 'result'; result.textContent = 'creando...';
+    try {
+        const r = await fetch('/api/alerts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (r.ok) {
+            result.className = 'result ok';
+            result.innerHTML = `✅ Alerta creada (ID: <code>${d.alert_id}</code>)`;
+            setTimeout(() => { closeAlertModal(); load(); }, 1200);
+        } else {
+            result.className = 'result err';
+            result.innerHTML = `❌ Rechazado (HTTP ${r.status})<pre>${JSON.stringify(d, null, 2)}</pre>`;
+        }
+    } catch (e) {
+        result.className = 'result err';
+        result.textContent = 'Error de red: ' + e;
+    }
+});
+// Cerrar al clickear fuera
+document.addEventListener('click', (e) => {
+    if (e.target.id === 'modal-create-alert') closeAlertModal();
+});
+</script>
 
 <script>
 async function load() {
-    const r = await fetch('/api/alerts?limit=100');
+    const status = document.getElementById('f-status').value;
+    const severity = document.getElementById('f-severity').value;
+    const params = new URLSearchParams({limit: 100});
+    if (status) params.set('status', status);
+    if (severity) params.set('severity', severity);
+
+    const r = await fetch('/api/alerts?' + params);
     const d = await r.json();
-    document.getElementById('total').textContent = `${d.total} alertas registradas`;
+    document.getElementById('total').textContent = `${d.total} alertas · ${d.items.length} mostradas`;
 
     const tbody = document.getElementById('rows');
     if (!d.items.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="muted">Sin alertas</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="muted">Sin alertas</td></tr>';
         return;
     }
+
     tbody.innerHTML = d.items.map(a => {
         const ev = a.evidence || {};
         const extras = Object.entries(ev)
             .filter(([k]) => k !== 'event_ids')
             .map(([k, v]) => `<b>${k}:</b> ${JSON.stringify(v)}`)
             .join(' · ');
+
+        let actions = '';
+        if (a.status === 'open') {
+            actions = `
+                <button class="btn-action ack" onclick="updateAlert('${a._id}', 'acknowledged')">Reconocer</button>
+                <button class="btn-action close" onclick="updateAlert('${a._id}', 'closed')">Cerrar</button>`;
+        } else if (a.status === 'acknowledged') {
+            actions = `<button class="btn-action close" onclick="updateAlert('${a._id}', 'closed')">Cerrar</button>`;
+        } else {
+            actions = `<button class="btn-action" onclick="updateAlert('${a._id}', 'open')">Reabrir</button>`;
+        }
+
         return `
             <tr>
                 <td>${new Date(a.fired_at).toLocaleString()}</td>
@@ -40,10 +184,29 @@ async function load() {
                 <td>${a.title}</td>
                 <td class="small">${extras}</td>
                 <td>${a.status}</td>
+                <td>${actions}</td>
             </tr>`;
     }).join('');
 }
+
+async function updateAlert(id, newStatus) {
+    const msg = document.getElementById('msg');
+    msg.textContent = `actualizando ${id.substring(0,8)}... a "${newStatus}"`;
+    try {
+        const r = await fetch('/api/alerts/' + id, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({status: newStatus}),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        msg.textContent = `✅ alerta ${id.substring(0,8)}... → ${newStatus}`;
+        await load();
+    } catch (e) {
+        msg.textContent = '❌ error: ' + e;
+    }
+}
+
 load();
-setInterval(load, 15000);
+setInterval(load, 30000);
 </script>
 {% endblock %}

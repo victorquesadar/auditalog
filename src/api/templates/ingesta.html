@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Ingesta manual · AuditaLog{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Ingesta manual</h1>
+    <a class="btn-secondary" href="/eventos" style="text-decoration:none;">Ver eventos →</a>
+</div>
+<p class="muted">Enviá un evento al pipeline. Es la misma ruta que usarían
+aplicaciones propias que quieran reportar actividad. El evento pasa por el
+Stream de Redis, el worker lo procesa, aplica las reglas y lo persiste en Mongo.</p>
+
+<section class="card" style="max-width:720px">
+    <form id="form-ingest">
+        <div class="form-grid">
+            <label>Fuente*
+                <select name="source" required>
+                    <option value="app">app</option>
+                    <option value="auth.log">auth.log</option>
+                    <option value="access.log">access.log</option>
+                </select>
+            </label>
+            <label>Severidad*
+                <select name="severity" required>
+                    <option value="info">info</option>
+                    <option value="warn">warn</option>
+                    <option value="critical">critical</option>
+                </select>
+            </label>
+            <label>Acción*
+                <input type="text" name="action" required placeholder="login_failed, login_ok, config_changed..." value="login_failed">
+            </label>
+            <label>Usuario
+                <input type="text" name="user" placeholder="root, ana, admin...">
+            </label>
+            <label>IP
+                <input type="text" name="ip" placeholder="203.0.113.5">
+            </label>
+            <label>Host
+                <input type="text" name="host" placeholder="vps-01">
+            </label>
+            <label class="full">Detalle (JSON opcional)
+                <textarea name="detail" rows="2" placeholder='{"method":"ssh","port":22}'></textarea>
+            </label>
+            <label class="full">Raw (línea original, opcional)
+                <input type="text" name="raw" placeholder="Oct 22 23:00:00 vps-01 sshd[1234]: Failed password...">
+            </label>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">Enviar al Stream</button>
+            <button type="button" id="btn-bruteforce" class="secondary">
+                Simular fuerza bruta (5 fallos)
+            </button>
+            <button type="button" id="btn-offhours" class="secondary">
+                Simular login 03:30 AM
+            </button>
+            <button type="button" id="btn-reset" class="danger">Limpiar</button>
+        </div>
+    </form>
+
+    <div id="result" class="result"></div>
+</section>
+
+<section style="margin-top:2rem;">
+    <h2>¿Qué va a pasar?</h2>
+    <ol class="flow">
+        <li><b>1.</b> Tu evento se publica en el Stream <code>grupo4:auditalog:ingest</code>.</li>
+        <li><b>2.</b> El <b>worker</b> lo saca con <code>XREADGROUP</code> y lo procesa.</li>
+        <li><b>3.</b> Aplica las <b>reglas</b> (fuerza bruta, fuera de horario).</li>
+        <li><b>4.</b> Guarda el evento en Mongo <code>events</code> y las alertas en <code>alerts</code>.</li>
+        <li><b>5.</b> El <a href="/">dashboard</a> y <a href="/alertas">la página de alertas</a> se actualizan en el próximo refresh.</li>
+    </ol>
+    <p class="muted">Si el worker no está corriendo, el evento queda en el Stream esperando;
+    arrancalo con <code>python -m src.workers.ingest_worker</code>.</p>
+</section>
+
+<script>
+const form = document.getElementById('form-ingest');
+const result = document.getElementById('result');
+
+function fillForm(data) {
+    for (const [k, v] of Object.entries(data)) {
+        const el = form.elements[k];
+        if (el) el.value = v;
+    }
+}
+
+async function submit(payload) {
+    result.textContent = 'enviando...';
+    result.className = 'result';
+    try {
+        const r = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (r.ok) {
+            result.className = 'result ok';
+            result.innerHTML =
+                `<b>✅ Aceptado</b> (HTTP ${r.status}) · stream_id = <code>${d.stream_id}</code>` +
+                `<br><a href="/eventos">Ver en /eventos</a> · <a href="/alertas">Ver alertas</a>`;
+        } else {
+            result.className = 'result err';
+            result.innerHTML = `<b>❌ Rechazado</b> (HTTP ${r.status})<pre>${JSON.stringify(d, null, 2)}</pre>`;
+        }
+    } catch (e) {
+        result.className = 'result err';
+        result.textContent = 'Error de red: ' + e;
+    }
+}
+
+form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(form));
+    const payload = {};
+    for (const k in data) if (data[k]) payload[k] = data[k];
+    // Parsear detail si es JSON
+    if (payload.detail) {
+        try { payload.detail = JSON.parse(payload.detail); }
+        catch { result.className = 'result err';
+                result.textContent = '❌ El campo "detail" no es JSON válido';
+                return; }
+    }
+    submit(payload);
+});
+
+document.getElementById('btn-bruteforce').addEventListener('click', async () => {
+    const ip = '203.0.113.99';
+    result.innerHTML = '🔥 enviando 5 fallos consecutivos desde ' + ip + '...';
+    for (let i = 0; i < 5; i++) {
+        await fetch('/api/ingest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source: 'auth.log', action: 'login_failed',
+                user: 'root', ip, severity: 'warn',
+                raw: `Simulated brute force attempt ${i+1}/5 from ${ip}`,
+            }),
+        });
+    }
+    result.className = 'result ok';
+    result.innerHTML = `<b>✅ 5 fallos enviados</b> desde <code>${ip}</code>. El worker ` +
+                       `debería disparar una alerta de <b>fuerza bruta</b>. ` +
+                       `<a href="/alertas">Ver /alertas</a>`;
+});
+
+document.getElementById('btn-offhours').addEventListener('click', () => {
+    const ts = new Date();
+    ts.setHours(3, 30, 0, 0);
+    fillForm({
+        source: 'auth.log', action: 'login_ok', user: 'ana',
+        ip: '10.0.0.5', host: 'vps-01', severity: 'info',
+        detail: '{"method":"ssh"}',
+        raw: `${ts.toISOString()} vps-01 sshd: Accepted password for ana from 10.0.0.5`,
+    });
+    submit({
+        source: 'auth.log', action: 'login_ok', user: 'ana', ip: '10.0.0.5',
+        host: 'vps-01', severity: 'info',
+        ts: ts.toISOString(),
+        detail: {method: 'ssh'},
+        raw: `${ts.toISOString()} vps-01 sshd: Accepted password for ana from 10.0.0.5`,
+    });
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+    form.reset();
+    result.textContent = '';
+    result.className = 'result';
+});
+</script>
+{% endblock %}

@@ -2,7 +2,13 @@
 {% block title %}Eventos · AuditaLog{% endblock %}
 
 {% block content %}
-<h1>Eventos</h1>
+<div class="page-header">
+    <h1>Eventos</h1>
+    <div class="page-header-right">
+        <button type="button" class="btn-secondary" id="btn-refresh" onclick="load()">↻ Actualizar</button>
+        <button type="button" class="btn-primary" onclick="openCreateModal()">+ Agregar evento</button>
+    </div>
+</div>
 
 <form id="filters" class="filters">
     <label>Fuente
@@ -24,11 +30,12 @@
     <label>IP <input type="text" name="ip" placeholder="192.0.2.45"></label>
     <label>Usuario <input type="text" name="user" placeholder="root"></label>
     <button type="submit">Aplicar</button>
+    <button type="button" onclick="resetFilters()">Limpiar</button>
 </form>
 
 <p id="total" class="muted">—</p>
 
-<table class="data">
+<table class="data clickable">
     <thead>
         <tr>
             <th>Hora</th><th>Fuente</th><th>Severidad</th><th>Acción</th>
@@ -42,6 +49,71 @@
     <button id="prev">« anterior</button>
     <span id="page">1</span>
     <button id="next">siguiente »</button>
+</div>
+
+<!-- Modal: Crear evento -->
+<div class="modal" id="modal-create" style="display:none; position:fixed; inset:0; z-index:1000; background:rgba(15,23,42,.5); align-items:center; justify-content:center; padding:1rem;">
+    <div class="modal-box" style="background:white; border-radius:12px; width:100%; max-width:580px; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <div class="modal-header">
+            <h2>Agregar evento</h2>
+            <button type="button" class="btn-close" onclick="closeModal('modal-create')">×</button>
+        </div>
+        <form id="create-form" class="modal-body">
+            <div class="form-grid">
+                <label>Fuente*
+                    <select name="source" required>
+                        <option value="app">app</option>
+                        <option value="auth.log">auth.log</option>
+                        <option value="access.log">access.log</option>
+                    </select>
+                </label>
+                <label>Severidad*
+                    <select name="severity" required>
+                        <option value="info">info</option>
+                        <option value="warn">warn</option>
+                        <option value="critical">critical</option>
+                    </select>
+                </label>
+                <label>Acción*
+                    <input type="text" name="action" required value="login_failed">
+                </label>
+                <label>Usuario
+                    <input type="text" name="user" placeholder="root, ana...">
+                </label>
+                <label>IP
+                    <input type="text" name="ip" placeholder="203.0.113.5">
+                </label>
+                <label>Host
+                    <input type="text" name="host" placeholder="vps-01">
+                </label>
+                <label class="full">Detalle (JSON)
+                    <textarea name="detail" rows="2" placeholder='{"method":"ssh"}'></textarea>
+                </label>
+                <label class="full">Raw
+                    <input type="text" name="raw" placeholder="línea original del log">
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" onclick="closeModal('modal-create')">Cancelar</button>
+                <button type="submit" class="btn-primary">Crear evento</button>
+            </div>
+            <div id="create-result" class="result"></div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Detalle de evento -->
+<div class="modal" id="modal-detail" style="display:none; position:fixed; inset:0; z-index:1000; background:rgba(15,23,42,.5); align-items:center; justify-content:center; padding:1rem;">
+    <div class="modal-box" style="background:white; border-radius:12px; width:100%; max-width:580px; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <div class="modal-header">
+            <h2>Detalle del evento</h2>
+            <button type="button" class="btn-close" onclick="closeModal('modal-detail')">×</button>
+        </div>
+        <div class="modal-body" id="detail-body">cargando…</div>
+        <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="closeModal('modal-detail')">Cerrar</button>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -62,7 +134,7 @@ async function load() {
     const r = await fetch('/api/events?' + qs());
     const d = await r.json();
     document.getElementById('total').textContent =
-        `${d.total} eventos en total · página ${page + 1} de ${Math.max(1, Math.ceil(d.total / PAGE_SIZE))}`;
+        `${d.total} eventos · página ${page + 1} de ${Math.max(1, Math.ceil(d.total / PAGE_SIZE))}`;
 
     const tbody = document.getElementById('rows');
     if (!d.items.length) {
@@ -70,7 +142,7 @@ async function load() {
         return;
     }
     tbody.innerHTML = d.items.map(e => `
-        <tr>
+        <tr onclick="openDetail('${e._id}')">
             <td>${new Date(e.ts).toLocaleString()}</td>
             <td>${e.source}</td>
             <td><span class="badge sev-${e.severity}">${e.severity}</span></td>
@@ -78,7 +150,7 @@ async function load() {
             <td>${e.user || '—'}</td>
             <td>${e.ip || '—'}</td>
             <td>${e.host || '—'}</td>
-            <td><code class="raw">${(e.raw || '').substring(0, 120)}</code></td>
+            <td><code class="raw">${(e.raw || '').substring(0, 100)}</code></td>
         </tr>
     `).join('');
     document.getElementById('page').textContent = page + 1;
@@ -89,6 +161,105 @@ document.getElementById('filters').addEventListener('submit', (e) => {
 });
 document.getElementById('prev').addEventListener('click', () => { if (page > 0) { page--; load(); } });
 document.getElementById('next').addEventListener('click', () => { page++; load(); });
+
+function resetFilters() {
+    document.getElementById('filters').reset();
+    page = 0; load();
+}
+
+// Modal helpers (usa display directo para no depender del CSS)
+function openModal(id) {
+    const el = document.getElementById(id);
+    el.classList.add('open');
+    el.style.display = 'flex';
+}
+function closeModal(id) {
+    const el = document.getElementById(id);
+    el.classList.remove('open');
+    el.style.display = 'none';
+}
+// Cerrar modal al clickear fuera
+document.addEventListener('click', (e) => {
+    if (e.target.classList && e.target.classList.contains('modal')) {
+        closeModal(e.target.id);
+    }
+});
+
+// --- Crear evento ---
+function openCreateModal() {
+    document.getElementById('create-result').textContent = '';
+    document.getElementById('create-result').className = 'result';
+    openModal('modal-create');
+}
+
+document.getElementById('create-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    const payload = {};
+    for (const k in data) if (data[k]) payload[k] = data[k];
+    if (payload.detail) {
+        try { payload.detail = JSON.parse(payload.detail); }
+        catch {
+            const r = document.getElementById('create-result');
+            r.className = 'result err';
+            r.textContent = '❌ El campo "detail" debe ser JSON válido';
+            return;
+        }
+    }
+    const result = document.getElementById('create-result');
+    result.className = 'result'; result.textContent = 'enviando...';
+    try {
+        const r = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (r.ok) {
+            result.className = 'result ok';
+            result.innerHTML = `✅ Evento aceptado (HTTP 202) · stream_id: <code>${d.stream_id}</code><br>` +
+                               `El worker lo procesará y aparecerá en la tabla en segundos.`;
+            setTimeout(() => { closeModal('modal-create'); load(); }, 2000);
+        } else {
+            result.className = 'result err';
+            result.innerHTML = `❌ Rechazado (HTTP ${r.status})<pre>${JSON.stringify(d, null, 2)}</pre>`;
+        }
+    } catch (e) {
+        result.className = 'result err';
+        result.textContent = 'Error de red: ' + e;
+    }
+});
+
+// --- Detalle de evento ---
+async function openDetail(id) {
+    openModal('modal-detail');
+    const body = document.getElementById('detail-body');
+    body.innerHTML = 'cargando…';
+    try {
+        const r = await fetch('/api/events/' + id);
+        const d = await r.json();
+        if (!r.ok) {
+            body.innerHTML = `<p class="result err">Error: ${d.detail || 'no encontrado'}</p>`;
+            return;
+        }
+        body.innerHTML = `
+            <table class="detail">
+                <tr><th>ID</th><td><code>${d._id}</code></td></tr>
+                <tr><th>Fecha</th><td>${new Date(d.ts).toLocaleString()}</td></tr>
+                <tr><th>Fuente</th><td>${d.source}</td></tr>
+                <tr><th>Host</th><td>${d.host || '—'}</td></tr>
+                <tr><th>Severidad</th><td><span class="badge sev-${d.severity}">${d.severity}</span></td></tr>
+                <tr><th>Acción</th><td>${d.action}</td></tr>
+                <tr><th>Usuario</th><td>${d.user || '—'}</td></tr>
+                <tr><th>IP</th><td>${d.ip || '—'}</td></tr>
+                <tr><th>Detalle</th><td><pre>${JSON.stringify(d.detail || {}, null, 2)}</pre></td></tr>
+                <tr><th>Raw</th><td><code>${d.raw}</code></td></tr>
+                <tr><th>Ingesta</th><td>${d.ingested_at ? new Date(d.ingested_at).toLocaleString() : '—'}</td></tr>
+            </table>`;
+    } catch (e) {
+        body.innerHTML = `<p class="result err">Error: ${e}</p>`;
+    }
+}
 
 load();
 </script>

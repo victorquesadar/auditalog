@@ -236,24 +236,67 @@ class IngestEvent(BaseModel):
     raw: Optional[str] = None
 
 
-@app.post("/api/ingest", status_code=202)
+@app.post("/api/ingest", status_code=201)
 def api_ingest(evento: IngestEvent):
-    """Permite que una app propia envíe un evento al stream."""
+    """Ingesta directa: inserta el evento en Mongo y aplica reglas al toque.
+
+    No depende del worker — el evento aparece inmediatamente en /eventos y las
+    alertas que dispare aparecen en /alertas. Para ingesta masiva desde archivos
+    de log, usar el colector + worker vía Redis Streams.
+    """
+    from src.common.rules import apply_rules
+    from bson import ObjectId as _OID
+
+    db = get_db()
     r = get_redis()
+
     ts = evento.ts or datetime.now(timezone.utc)
-    payload = {
+    event_doc = {
         "source": evento.source,
-        "host": evento.host or "",
-        "ts": ts.isoformat(),
-        "user": evento.user or "",
-        "ip": evento.ip or "",
+        "host": evento.host,
+        "ts": ts,
+        "ingested_at": datetime.now(timezone.utc),
+        "user": evento.user,
+        "ip": evento.ip,
         "action": evento.action,
-        "detail": json.dumps(evento.detail),
+        "detail": evento.detail,
         "severity": evento.severity,
-        "raw": evento.raw or json.dumps(evento.model_dump(mode="json")),
+        "raw": evento.raw or f"{ts.isoformat()} manual ingest",
     }
-    msg_id = r.xadd(key("ingest"), payload, maxlen=100_000, approximate=True)
-    return {"accepted": True, "stream_id": msg_id}
+    res = db.events.insert_one(event_doc)
+    event_doc["_id"] = res.inserted_id
+
+    alerts = apply_rules(r, db, event_doc, res.inserted_id)
+
+    return {
+        "accepted": True,
+        "event_id": str(res.inserted_id),
+        "alerts_fired": len(alerts),
+        "alerts": [{"rule_id": a["rule_id"], "title": a["title"]} for a in alerts],
+    }
+
+
+# ----------------------------------------------------------------------------
+# POST /api/alerts — crear una alerta manual (útil para demo)
+# ----------------------------------------------------------------------------
+
+class AlertCreate(BaseModel):
+    rule_id: str = Field(..., min_length=1)
+    severity: str = Field("warn", pattern="^(info|warn|critical)$")
+    title: str = Field(..., min_length=1)
+    evidence: dict = Field(default_factory=dict)
+    status: str = Field("open", pattern="^(open|acknowledged|closed)$")
+
+
+@app.post("/api/alerts", status_code=201)
+def api_create_alert(alert: AlertCreate):
+    db = get_db()
+    doc = {
+        **alert.model_dump(),
+        "fired_at": datetime.now(timezone.utc),
+    }
+    res = db.alerts.insert_one(doc)
+    return {"created": True, "alert_id": str(res.inserted_id)}
 
 
 # ----------------------------------------------------------------------------
@@ -273,3 +316,54 @@ def view_events(request: Request):
 @app.get("/alertas", response_class=HTMLResponse)
 def view_alerts(request: Request):
     return TEMPLATES.TemplateResponse(request, "alerts.html")
+
+
+@app.get("/ingesta", response_class=HTMLResponse)
+def view_ingest(request: Request):
+    return TEMPLATES.TemplateResponse(request, "ingesta.html")
+
+
+# ----------------------------------------------------------------------------
+# PATCH /api/alerts/{id} — cambiar estado (acknowledge / close)
+# ----------------------------------------------------------------------------
+
+class AlertStatusUpdate(BaseModel):
+    status: str = Field(..., pattern="^(open|acknowledged|closed)$")
+    notes: Optional[str] = None
+
+
+@app.patch("/api/alerts/{alert_id}")
+def api_update_alert(alert_id: str, patch: AlertStatusUpdate):
+    try:
+        oid = ObjectId(alert_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="alert_id inválido")
+
+    db = get_db()
+    update: dict = {"status": patch.status}
+    if patch.notes is not None:
+        update["notes"] = patch.notes
+
+    res = db.alerts.update_one({"_id": oid}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="alerta no encontrada")
+
+    return {"updated": True, "alert_id": alert_id, "status": patch.status}
+
+
+# ----------------------------------------------------------------------------
+# GET /api/events/{id} — detalle de un evento
+# ----------------------------------------------------------------------------
+
+@app.get("/api/events/{event_id}")
+def api_get_event(event_id: str):
+    try:
+        oid = ObjectId(event_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="event_id inválido")
+
+    db = get_db()
+    doc = db.events.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="evento no encontrado")
+    return _serialize(doc)

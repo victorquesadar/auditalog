@@ -111,13 +111,24 @@ def test_ingest_endpoint(client):
         "severity": "info",
         "detail": {"from_api": True},
     })
-    assert r.status_code == 202
+    assert r.status_code == 201
     data = r.json()
     assert data["accepted"] is True
-    assert "stream_id" in data
+    assert "event_id" in data
+    assert "alerts_fired" in data
 
-    r2 = redis_lib.Redis(decode_responses=True)
-    assert r2.xlen("grupo4:auditalog:ingest") == 1
+
+def test_create_alert_endpoint(client):
+    r = client.post("/api/alerts", json={
+        "rule_id": "manual_v1",
+        "severity": "warn",
+        "title": "Alerta de prueba manual",
+        "evidence": {"ip": "1.2.3.4"},
+    })
+    assert r.status_code == 201
+    data = r.json()
+    assert data["created"] is True
+    assert "alert_id" in data
 
 
 def test_html_pages_render(client):

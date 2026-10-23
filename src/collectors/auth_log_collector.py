@@ -27,7 +27,7 @@ from src.common.parsers import parse_auth_log
 STREAM_NAME = key("ingest")           # grupo4:auditalog:ingest
 MAX_STREAM_LEN = 100_000              # autotrim para no crecer sin control
 
-
+#Conexión para el redis 
 def connect_redis() -> redis.Redis:
     return redis.Redis(
         host=settings.redis_host,
@@ -37,7 +37,7 @@ def connect_redis() -> redis.Redis:
         decode_responses=True,
     )
 
-
+#Evento del push para eventos XADD
 def push_event(r: redis.Redis, evento: dict) -> str:
     """Serializa el evento y hace XADD al stream."""
     payload = {

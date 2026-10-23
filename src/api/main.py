@@ -14,13 +14,12 @@ Endpoints:
     GET  /api/health         → Ping de los 3 motores
 """
 from __future__ import annotations
-
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-
 import redis
+
 from bson import ObjectId
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -49,7 +48,7 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 _mongo: Optional[MongoClient] = None
 _redis: Optional[redis.Redis] = None
 
-
+# Conexión para el cliente de mongo
 def get_mongo() -> MongoClient:
     global _mongo
     if _mongo is None:

@@ -335,6 +335,299 @@ def view_upload(request: Request):
 
 
 # ----------------------------------------------------------------------------
+# POST /api/reset — limpia events, alerts y claves Redis
+# ----------------------------------------------------------------------------
+
+@app.post("/api/reset")
+def api_reset(
+    scope: str = Query("all", description="all | events | alerts | redis"),
+):
+    """Limpia datos del sistema. Pensado para resetear después de pruebas."""
+    db = get_db()
+    r = get_redis()
+    result = {"scope": scope, "events_deleted": 0, "alerts_deleted": 0, "redis_keys_deleted": 0}
+
+    if scope in ("all", "events"):
+        result["events_deleted"] = db.events.delete_many({}).deleted_count
+    if scope in ("all", "alerts"):
+        result["alerts_deleted"] = db.alerts.delete_many({}).deleted_count
+    if scope in ("all", "redis"):
+        # Borrar todas las claves con el prefijo del grupo
+        pattern = key("")  # ej. "grupo4:auditalog:"
+        keys = list(r.scan_iter(f"{pattern}*"))
+        if keys:
+            r.delete(*keys)
+            result["redis_keys_deleted"] = len(keys)
+
+    return result
+
+
+# ----------------------------------------------------------------------------
+# POST /api/export/xlsx — exporta análisis + eventos a Excel multi-hoja
+# ----------------------------------------------------------------------------
+
+@app.post("/api/export/xlsx")
+def api_export_xlsx(
+    include_events: bool = Query(True, description="Si True, incluye hoja Eventos (puede ser grande)"),
+    events_limit: int = Query(5000, ge=100, le=50_000),
+):
+    """Exporta a Excel multi-hoja: Resumen, Alertas por regla, Top IPs,
+    Alertas, (opcional) Eventos."""
+    from io import BytesIO
+    import tempfile, os as _os
+    from fastapi.responses import FileResponse as _FR
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise HTTPException(status_code=500,
+                            detail="openpyxl no está instalado. pip install openpyxl")
+
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    HEADER_FILL = PatternFill("solid", fgColor="0F172A")
+    HEADER_FONT = Font(bold=True, color="FFFFFF")
+    TITLE_FONT = Font(bold=True, size=14)
+    SUB_FONT = Font(italic=True, color="6B7280")
+
+    def _header_row(ws, row: int, headers: list[str]):
+        for col, h in enumerate(headers, start=1):
+            c = ws.cell(row=row, column=col, value=h)
+            c.fill = HEADER_FILL
+            c.font = HEADER_FONT
+            c.alignment = Alignment(horizontal="left", vertical="center")
+
+    def _autosize(ws, cols: int, max_width: int = 60):
+        for i in range(1, cols + 1):
+            letter = get_column_letter(i)
+            longest = 0
+            for row in ws.iter_rows(min_col=i, max_col=i, values_only=True):
+                v = row[0]
+                if v is not None:
+                    longest = max(longest, len(str(v)))
+            ws.column_dimensions[letter].width = min(max(longest + 2, 10), max_width)
+
+    def _iso(v):
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        return str(v) if v is not None else ""
+
+    wb = Workbook()
+
+    # -------- Hoja 1: Resumen --------
+    ws = wb.active
+    ws.title = "Resumen"
+    ws["A1"] = "AuditaLog · Reporte del análisis"
+    ws["A1"].font = TITLE_FONT
+    ws["A2"] = f"Generado: {now.strftime('%Y-%m-%d %H:%M UTC')}"
+    ws["A2"].font = SUB_FONT
+
+    ws["A4"] = "Métrica"; ws["B4"] = "Valor"
+    _header_row(ws, 4, ["Métrica", "Valor"])
+    rows = [
+        ("Eventos totales", db.events.count_documents({})),
+        ("Alertas totales", db.alerts.count_documents({})),
+        ("Alertas abiertas", db.alerts.count_documents({"status": "open"})),
+        ("Alertas críticas (abiertas)", db.alerts.count_documents({"severity": "critical", "status": "open"})),
+    ]
+    for i, (k, v) in enumerate(rows, start=5):
+        ws.cell(row=i, column=1, value=k)
+        ws.cell(row=i, column=2, value=v)
+
+    # Eventos por fuente
+    by_source = list(db.events.aggregate([
+        {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]))
+    start = len(rows) + 7
+    ws.cell(row=start - 1, column=1, value="Eventos por fuente").font = TITLE_FONT
+    _header_row(ws, start, ["Fuente", "Cantidad"])
+    for i, row in enumerate(by_source, start=start + 1):
+        ws.cell(row=i, column=1, value=row["_id"] or "(desconocido)")
+        ws.cell(row=i, column=2, value=row["count"])
+    _autosize(ws, 2)
+
+    # -------- Hoja 2: Alertas por regla --------
+    ws = wb.create_sheet("Alertas por regla")
+    _header_row(ws, 1, ["Regla", "Severidad", "Cantidad"])
+    by_rule = list(db.alerts.aggregate([
+        {"$group": {"_id": "$rule_id", "count": {"$sum": 1},
+                    "severity": {"$first": "$severity"}}},
+        {"$sort": {"count": -1}},
+    ]))
+    for i, row in enumerate(by_rule, start=2):
+        ws.cell(row=i, column=1, value=row["_id"])
+        ws.cell(row=i, column=2, value=row.get("severity", "?"))
+        ws.cell(row=i, column=3, value=row["count"])
+    _autosize(ws, 3)
+
+    # -------- Hoja 3: Top IPs sospechosas --------
+    ws = wb.create_sheet("Top IPs")
+    _header_row(ws, 1, ["IP", "Alertas", "Reglas disparadas"])
+    top_ips = list(db.alerts.aggregate([
+        {"$match": {"evidence.ip": {"$exists": True, "$ne": None}}},
+        {"$group": {"_id": "$evidence.ip", "count": {"$sum": 1},
+                    "rules": {"$addToSet": "$rule_id"}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 100},
+    ]))
+    for i, row in enumerate(top_ips, start=2):
+        ws.cell(row=i, column=1, value=row["_id"])
+        ws.cell(row=i, column=2, value=row["count"])
+        ws.cell(row=i, column=3, value=", ".join(sorted(row["rules"])))
+    _autosize(ws, 3)
+
+    # -------- Hoja 4: Alertas (lista completa, max 10k) --------
+    ws = wb.create_sheet("Alertas")
+    _header_row(ws, 1, ["Hora", "Severidad", "Regla", "Título", "Estado", "IP", "Usuario"])
+    for i, a in enumerate(db.alerts.find().sort("fired_at", -1).limit(10_000), start=2):
+        ev = a.get("evidence") or {}
+        ws.cell(row=i, column=1, value=_iso(a.get("fired_at")))
+        ws.cell(row=i, column=2, value=a.get("severity"))
+        ws.cell(row=i, column=3, value=a.get("rule_id"))
+        ws.cell(row=i, column=4, value=a.get("title"))
+        ws.cell(row=i, column=5, value=a.get("status"))
+        ws.cell(row=i, column=6, value=ev.get("ip"))
+        ws.cell(row=i, column=7, value=ev.get("user"))
+    _autosize(ws, 7)
+
+    # -------- Hoja 5: Eventos (opcional) --------
+    if include_events:
+        ws = wb.create_sheet("Eventos")
+        _header_row(ws, 1, ["Hora", "Fuente", "Severidad", "Acción", "Usuario", "IP", "Host", "Raw"])
+        for i, e in enumerate(db.events.find().sort("ts", -1).limit(events_limit), start=2):
+            ws.cell(row=i, column=1, value=_iso(e.get("ts")))
+            ws.cell(row=i, column=2, value=e.get("source"))
+            ws.cell(row=i, column=3, value=e.get("severity"))
+            ws.cell(row=i, column=4, value=e.get("action"))
+            ws.cell(row=i, column=5, value=e.get("user"))
+            ws.cell(row=i, column=6, value=e.get("ip"))
+            ws.cell(row=i, column=7, value=e.get("host"))
+            raw = (e.get("raw") or "")
+            ws.cell(row=i, column=8, value=raw[:300])
+        _autosize(ws, 8, max_width=80)
+
+    # Guardar a archivo temporal y devolver con FileResponse
+    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="auditalog_")
+    _os.close(fd)
+    wb.save(path)
+
+    filename = f"auditalog_reporte_{now.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return _FR(
+        path=path,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# ----------------------------------------------------------------------------
+# GET /api/report — resumen del análisis en texto (sin eventos crudos)
+# ----------------------------------------------------------------------------
+
+@app.get("/api/report")
+def api_report():
+    """Genera un resumen Markdown del análisis actual del sistema."""
+    from fastapi.responses import PlainTextResponse
+
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    total_events = db.events.count_documents({})
+    total_alerts = db.alerts.count_documents({})
+    open_alerts = db.alerts.count_documents({"status": "open"})
+    critical_alerts = db.alerts.count_documents({"severity": "critical"})
+
+    # Alertas por regla
+    by_rule = list(db.alerts.aggregate([
+        {"$group": {"_id": "$rule_id", "count": {"$sum": 1}, "severity": {"$first": "$severity"}}},
+        {"$sort": {"count": -1}},
+    ]))
+
+    # Top IPs por cantidad de alertas
+    top_ips = list(db.alerts.aggregate([
+        {"$match": {"evidence.ip": {"$exists": True, "$ne": None}}},
+        {"$group": {"_id": "$evidence.ip", "count": {"$sum": 1},
+                    "rules": {"$addToSet": "$rule_id"}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 15},
+    ]))
+
+    # Fuentes de eventos
+    by_source = list(db.events.aggregate([
+        {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]))
+
+    # Últimas 10 alertas críticas
+    recent_critical = list(db.alerts.find(
+        {"severity": "critical"}, sort=[("fired_at", -1)]
+    ).limit(10))
+
+    lines = []
+    lines.append("# Informe de Análisis · AuditaLog")
+    lines.append("")
+    lines.append(f"**Generado:** {now.strftime('%Y-%m-%d %H:%M UTC')}  ")
+    lines.append(f"**Sistema:** AuditaLog v0.3.0")
+    lines.append("")
+    lines.append("## Resumen")
+    lines.append("")
+    lines.append(f"- Eventos auditados: **{total_events:,}**")
+    lines.append(f"- Alertas totales: **{total_alerts:,}**")
+    lines.append(f"- Alertas abiertas: **{open_alerts:,}**")
+    lines.append(f"- Alertas críticas: **{critical_alerts:,}**")
+    lines.append("")
+
+    lines.append("## Eventos por fuente")
+    lines.append("")
+    lines.append("| Fuente | Cantidad |")
+    lines.append("|---|---|")
+    for row in by_source:
+        lines.append(f"| {row['_id'] or '(desconocido)'} | {row['count']:,} |")
+    lines.append("")
+
+    lines.append("## Alertas por regla disparada")
+    lines.append("")
+    lines.append("| Regla | Severidad | Cantidad |")
+    lines.append("|---|---|---|")
+    for row in by_rule:
+        lines.append(f"| {row['_id']} | {row.get('severity','?')} | {row['count']} |")
+    lines.append("")
+
+    if top_ips:
+        lines.append("## Top IPs sospechosas (por cantidad de alertas)")
+        lines.append("")
+        lines.append("| IP | Alertas | Reglas disparadas |")
+        lines.append("|---|---|---|")
+        for row in top_ips:
+            rules_s = ", ".join(sorted(row["rules"]))
+            lines.append(f"| `{row['_id']}` | {row['count']} | {rules_s} |")
+        lines.append("")
+
+    if recent_critical:
+        lines.append("## Últimas alertas críticas")
+        lines.append("")
+        for a in recent_critical:
+            ts = a["fired_at"].strftime("%Y-%m-%d %H:%M") if isinstance(a["fired_at"], datetime) else str(a["fired_at"])
+            lines.append(f"- **{ts}** · [{a['rule_id']}] {a['title']}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("*Este informe es un extracto. El paquete completo (`.db` SQLite) está disponible en /exportar.*")
+
+    body = "\n".join(lines)
+    return PlainTextResponse(
+        content=body,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="informe_auditalog_{now.strftime("%Y%m%d_%H%M%S")}.md"',
+        },
+    )
+
+
+# ----------------------------------------------------------------------------
 # POST /api/upload — recibe archivo de log, lo parsea y lo ingiere
 # ----------------------------------------------------------------------------
 
@@ -347,10 +640,17 @@ async def api_upload(
     """Recibe un archivo de log, lo parsea con el parser correspondiente,
     lo mete línea por línea en Mongo y aplica reglas al toque.
     """
-    from src.common.parsers import parse_auth_log, parse_access_log
+    from src.common.parsers import parse_auth_log, parse_access_log, parse_php_log
     from src.common.rules import apply_rules
 
-    parser = parse_auth_log if source == "auth.log" else parse_access_log
+    if source == "auth.log":
+        parser = parse_auth_log
+    elif source == "access.log":
+        parser = parse_access_log
+    elif source == "php_log":
+        parser = parse_php_log
+    else:
+        raise HTTPException(status_code=400, detail=f"Fuente no soportada: {source}")
 
     db = get_db()
     r = get_redis()
@@ -373,7 +673,10 @@ async def api_upload(
         if not line.strip():
             continue
         try:
-            ev = parser(line, default_year=year) if source == "auth.log" else parser(line)
+            if source in ("auth.log", "php_log"):
+                ev = parser(line, default_year=year)
+            else:
+                ev = parser(line)
         except Exception:
             skipped += 1
             continue

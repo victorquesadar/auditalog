@@ -270,6 +270,96 @@ def rule_dir_scanning(r: redis.Redis, event: dict, mongo_event_id) -> Optional[d
     }
 
 
+def rule_php_fatal(event: dict, mongo_event_id) -> Optional[dict]:
+    """PHP Fatal error: casi siempre indica app rota, posible ataque o config errónea."""
+    if event.get("source") != "php_log":
+        return None
+    if event.get("action") != "php_fatal":
+        return None
+    detail = event.get("detail") or {}
+    return {
+        "rule_id": "php_fatal_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "critical",
+        "title": f"PHP Fatal error en {detail.get('file', 'archivo desconocido')}",
+        "evidence": {
+            "level": detail.get("level"),
+            "file": detail.get("file"),
+            "line": detail.get("line"),
+            "message_excerpt": (detail.get("message") or "")[:200],
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
+def rule_php_warning_burst(r: redis.Redis, event: dict, mongo_event_id) -> Optional[dict]:
+    """Muchos PHP Warning en poco tiempo = síntoma de ataque o degradación."""
+    if event.get("source") != "php_log":
+        return None
+    if event.get("action") not in ("php_warning", "php_notice"):
+        return None
+
+    detail = event.get("detail") or {}
+    file_hint = detail.get("file") or "unknown"
+    k = key("php_warn", file_hint)
+    cnt = r.incr(k)
+    r.expire(k, 300)  # ventana 5 minutos
+
+    if cnt < 10:  # umbral: 10 warnings del mismo archivo en 5 min
+        return None
+
+    return {
+        "rule_id": "php_warn_burst_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "warn",
+        "title": f"Ráfaga de PHP warnings en {file_hint} ({cnt} en 5 min)",
+        "evidence": {
+            "file": file_hint,
+            "count": int(cnt),
+            "window_sec": 300,
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
+def rule_ssh_scanner(r: redis.Redis, event: dict, mongo_event_id) -> Optional[dict]:
+    """Muchos probes SSH desde la misma IP = scanner / botnet.
+
+    Dispara cuando una IP acumula ≥3 probes (banner_invalid, preauth_reset,
+    no_identification) en 10 minutos.
+    """
+    if event.get("source") != "auth.log":
+        return None
+    if event.get("action") != "ssh_probe":
+        return None
+    ip = event.get("ip")
+    if not ip:
+        return None
+
+    k = key("ssh_probe", ip)
+    cnt = r.incr(k)
+    r.expire(k, 600)
+
+    if cnt < 3:
+        return None
+
+    return {
+        "rule_id": "ssh_scanner_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "warn",
+        "title": f"Scanner SSH desde {ip} ({cnt} probes en 10 min)",
+        "evidence": {
+            "ip": ip,
+            "probes": int(cnt),
+            "last_type": (event.get("detail") or {}).get("probe_type"),
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
 def rule_sudo_fail(event: dict, mongo_event_id) -> Optional[dict]:
     """Intento de escalada de privilegios: sudo fallido."""
     if event.get("source") != "auth.log":
@@ -306,6 +396,9 @@ def apply_rules(r: redis.Redis, db: Database, event: dict, mongo_event_id) -> li
         ("sensitive_path",    lambda: rule_sensitive_path(event, mongo_event_id)),
         ("dir_scanning",      lambda: rule_dir_scanning(r, event, mongo_event_id)),
         ("sudo_fail",         lambda: rule_sudo_fail(event, mongo_event_id)),
+        ("ssh_scanner",       lambda: rule_ssh_scanner(r, event, mongo_event_id)),
+        ("php_fatal",         lambda: rule_php_fatal(event, mongo_event_id)),
+        ("php_warn_burst",    lambda: rule_php_warning_burst(r, event, mongo_event_id)),
     ):
         try:
             alert = fn()

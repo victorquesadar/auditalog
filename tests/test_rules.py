@@ -13,8 +13,11 @@ from src.common.rules import (
     rule_dir_scanning,
     rule_directory_traversal,
     rule_offhours,
+    rule_php_fatal,
+    rule_php_warning_burst,
     rule_sensitive_path,
     rule_sql_injection,
+    rule_ssh_scanner,
     rule_sudo_fail,
     rule_xss,
 )
@@ -184,3 +187,87 @@ def test_offhours_still_works():
         "action": "login_ok", "severity": "info", "detail": {}, "raw": "",
     }
     assert rule_offhours(ev, "oid") is not None
+
+
+# ----------------------------------------------------------------------------
+# Reglas PHP (nuevas, S3 extended)
+# ----------------------------------------------------------------------------
+
+def _php_event(action="php_fatal", severity="critical", file="/var/www/app.php", msg="error"):
+    return {
+        "source": "php_log",
+        "ts": datetime.now(timezone.utc),
+        "action": action,
+        "severity": severity,
+        "detail": {"level": severity, "file": file, "line": 10, "message": msg},
+        "raw": f"[fecha] PHP {action}: {msg}",
+    }
+
+
+def test_php_fatal_dispara_critical():
+    ev = _php_event(action="php_fatal", severity="critical",
+                    file="/home/grupo4/public_html/clientes2/clientes.php",
+                    msg="Uncaught MongoDB\\Driver\\Exception\\ConnectionTimeoutException")
+    alert = rule_php_fatal(ev, "oid")
+    assert alert is not None
+    assert alert["severity"] == "critical"
+    assert alert["rule_id"] == "php_fatal_v1"
+    assert "clientes.php" in alert["title"]
+
+
+def test_php_warning_no_dispara_fatal():
+    ev = _php_event(action="php_warning", severity="warn")
+    assert rule_php_fatal(ev, "oid") is None
+
+
+def test_php_warning_burst(r):
+    """10 warnings del mismo archivo en la ventana -> alerta."""
+    file = "/var/www/busted.php"
+    ev = _php_event(action="php_warning", severity="warn", file=file)
+    for i in range(9):
+        assert rule_php_warning_burst(r, ev, f"oid-{i}") is None
+    alert = rule_php_warning_burst(r, ev, "oid-10")
+    assert alert is not None
+    assert alert["evidence"]["count"] == 10
+
+
+def test_php_warning_burst_distinto_archivo_no_dispara(r):
+    for i in range(10):
+        ev = _php_event(action="php_warning", severity="warn", file=f"/var/www/f{i}.php")
+        assert rule_php_warning_burst(r, ev, f"oid-{i}") is None
+
+
+# ----------------------------------------------------------------------------
+# SSH scanner (nueva en S3)
+# ----------------------------------------------------------------------------
+
+def test_ssh_scanner_dispara_al_tercer_probe(r):
+    ev = {
+        "source": "auth.log",
+        "ts": datetime.now(timezone.utc),
+        "ip": "152.42.130.61",
+        "action": "ssh_probe",
+        "severity": "warn",
+        "detail": {"probe_type": "banner_invalid"},
+        "raw": "",
+    }
+    assert rule_ssh_scanner(r, ev, "oid-1") is None
+    assert rule_ssh_scanner(r, ev, "oid-2") is None
+    alert = rule_ssh_scanner(r, ev, "oid-3")
+    assert alert is not None
+    assert alert["rule_id"] == "ssh_scanner_v1"
+    assert alert["evidence"]["probes"] == 3
+
+
+def test_ssh_scanner_ignora_login_ok(r):
+    ev = {
+        "source": "auth.log",
+        "ts": datetime.now(timezone.utc),
+        "ip": "10.0.0.5",
+        "action": "login_ok",
+        "severity": "info",
+        "detail": {"method": "publickey"},
+        "raw": "",
+    }
+    for _ in range(10):
+        assert rule_ssh_scanner(r, ev, "x") is None

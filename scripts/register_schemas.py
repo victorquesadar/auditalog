@@ -31,7 +31,7 @@ EVENT_SCHEMA = {
     "properties": {
         "source": {
             "bsonType": "string",
-            "enum": ["auth.log", "access.log", "app", "hello_world"],
+            "enum": ["auth.log", "access.log", "app", "php_log", "hello_world"],
             "description": "fuente del evento",
         },
         "host": {"bsonType": ["string", "null"]},

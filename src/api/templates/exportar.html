@@ -33,6 +33,50 @@ alertas del período que elijas. El auditor lo abre con <b>DB Browser for SQLite
     </form>
 </section>
 
+<section class="card" style="max-width:720px; margin-bottom:1.5rem;">
+    <h2>Reporte en Excel (.xlsx)</h2>
+    <p class="muted">Hoja de cálculo con 5 pestañas: <b>Resumen</b> (KPIs y eventos por fuente),
+    <b>Alertas por regla</b>, <b>Top IPs</b> sospechosas con sus reglas, <b>Alertas</b>
+    (hasta 10.000) y <b>Eventos</b> (hasta 5.000). Útil para el responsable técnico o para
+    seguir analizando en Excel/LibreOffice/Google Sheets.</p>
+    <div class="form-actions">
+        <label style="display:flex; align-items:center; gap:.4rem; color:var(--fg-muted); font-size:.85rem;">
+            <input type="checkbox" id="xlsx-events" checked>
+            Incluir hoja de eventos crudos
+        </label>
+        <button type="button" class="btn-primary" id="btn-xlsx">
+            📊 Descargar Excel (.xlsx)
+        </button>
+    </div>
+    <div id="xlsx-result" class="result"></div>
+</section>
+
+<section class="card" style="max-width:720px; margin-bottom:1.5rem;">
+    <h2>Resumen del análisis en texto (.md)</h2>
+    <p class="muted">Informe en Markdown con el resumen de las alertas,
+    IPs sospechosas y conteos. No incluye los eventos individuales — útil para
+    enviar al responsable sin exponer logs completos.</p>
+    <div class="form-actions">
+        <button type="button" class="btn-secondary" id="btn-report">
+            📄 Descargar informe (.md)
+        </button>
+    </div>
+    <div id="report-result" class="result"></div>
+</section>
+
+<section class="card" style="max-width:720px; margin-bottom:1.5rem; border-left:3px solid var(--critical);">
+    <h2>Limpiar sistema</h2>
+    <p class="muted">Borra todos los eventos y alertas y resetea los contadores de Redis.
+    Útil para empezar un análisis desde cero sin arrastrar datos de pruebas anteriores.
+    <b>No se puede deshacer.</b></p>
+    <div class="form-actions">
+        <button type="button" class="btn-secondary" style="border-color:var(--critical); color:var(--critical);" id="btn-reset">
+            🗑️ Borrar eventos y alertas
+        </button>
+    </div>
+    <div id="reset-result" class="result"></div>
+</section>
+
 <section class="card" style="max-width:720px;">
     <h2>Qué incluye el paquete</h2>
     <ul style="padding-left:1.25rem; margin: 0 0 1rem; font-size:.9rem;">
@@ -53,6 +97,92 @@ alertas del período que elijas. El auditor lo abre con <b>DB Browser for SQLite
 </section>
 
 <script>
+// --- Descargar Excel (.xlsx) ---
+document.getElementById('btn-xlsx').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-xlsx');
+    const includeEvents = document.getElementById('xlsx-events').checked;
+    const xres = document.getElementById('xlsx-result');
+    btn.disabled = true; btn.textContent = '⏳ Generando (puede tardar unos segundos)...';
+    xres.className = 'result';
+    try {
+        const resp = await fetch(`/api/export/xlsx?include_events=${includeEvents}`, { method: 'POST' });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || ('HTTP ' + resp.status));
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const cd = resp.headers.get('content-disposition') || '';
+        const match = cd.match(/filename="?([^"]+)"?/);
+        a.download = match ? match[1] : 'reporte_auditalog.xlsx';
+        a.href = url; a.click();
+        URL.revokeObjectURL(url);
+        xres.className = 'result ok';
+        xres.innerHTML = `✅ Excel descargado (${(blob.size / 1024).toFixed(1)} KB) con 5 hojas`;
+    } catch (e) {
+        xres.className = 'result err';
+        xres.textContent = 'Error: ' + e;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📊 Descargar Excel (.xlsx)';
+    }
+});
+
+// --- Descargar informe (.md) ---
+document.getElementById('btn-report').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-report');
+    const rres = document.getElementById('report-result');
+    btn.disabled = true; btn.textContent = '⏳ Generando...';
+    rres.className = 'result';
+    try {
+        const resp = await fetch('/api/report');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const cd = resp.headers.get('content-disposition') || '';
+        const match = cd.match(/filename="?([^"]+)"?/);
+        a.download = match ? match[1] : 'informe_auditalog.md';
+        a.href = url; a.click();
+        URL.revokeObjectURL(url);
+        rres.className = 'result ok';
+        rres.innerHTML = `✅ Informe descargado (${(blob.size / 1024).toFixed(1)} KB)`;
+    } catch (e) {
+        rres.className = 'result err';
+        rres.textContent = 'Error: ' + e;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📄 Descargar informe (.md)';
+    }
+});
+
+// --- Limpiar sistema ---
+document.getElementById('btn-reset').addEventListener('click', async () => {
+    if (!confirm('¿Borrar TODOS los eventos y alertas? Esto no se puede deshacer.')) return;
+    const btn = document.getElementById('btn-reset');
+    const rres = document.getElementById('reset-result');
+    btn.disabled = true; btn.textContent = '⏳ Borrando...';
+    rres.className = 'result';
+    try {
+        const resp = await fetch('/api/reset?scope=all', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const d = await resp.json();
+        rres.className = 'result ok';
+        rres.innerHTML = `✅ <b>Sistema limpio</b><br>` +
+                         `• Eventos borrados: ${d.events_deleted.toLocaleString()}<br>` +
+                         `• Alertas borradas: ${d.alerts_deleted.toLocaleString()}<br>` +
+                         `• Claves Redis borradas: ${d.redis_keys_deleted}<br>` +
+                         `<a href="/">Ver dashboard →</a>`;
+    } catch (e) {
+        rres.className = 'result err';
+        rres.textContent = 'Error: ' + e;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🗑️ Borrar eventos y alertas';
+    }
+});
+
 const form = document.getElementById('export-form');
 const allHist = document.getElementById('all-history');
 const btn = document.getElementById('btn-export');

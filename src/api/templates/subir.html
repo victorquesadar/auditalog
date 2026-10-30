@@ -12,13 +12,14 @@ aplica las reglas de detección en tiempo real.
 <section class="card" style="max-width:720px; margin-bottom:1.5rem;">
     <form id="upload-form">
         <div class="form-grid">
-            <label class="full">Archivo (.log, máx. 50 MB)
-                <input type="file" name="file" id="file-input" accept=".log,.txt" required>
+            <label class="full">Archivo (.log, .log.N, .txt — máx. 50 MB)
+                <input type="file" name="file" id="file-input" required>
             </label>
             <label>Formato del log*
                 <select name="source" required>
                     <option value="auth.log">auth.log (SSH / Linux)</option>
                     <option value="access.log">access.log (Apache / Nginx)</option>
+                    <option value="php_log">php_log (PHP error log)</option>
                 </select>
             </label>
             <label>Año de referencia

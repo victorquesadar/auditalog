@@ -378,8 +378,11 @@ def api_export_xlsx(
     from fastapi.responses import FileResponse as _FR
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
+        from openpyxl.chart import BarChart, DoughnutChart, Reference
+        from openpyxl.chart.label import DataLabelList
+        from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
     except ImportError:
         raise HTTPException(status_code=500,
                             detail="openpyxl no está instalado. pip install openpyxl")
@@ -389,8 +392,20 @@ def api_export_xlsx(
 
     HEADER_FILL = PatternFill("solid", fgColor="0F172A")
     HEADER_FONT = Font(bold=True, color="FFFFFF")
-    TITLE_FONT = Font(bold=True, size=14)
+    TITLE_FONT = Font(bold=True, size=16, color="0F172A")
+    SECTION_FONT = Font(bold=True, size=12, color="0F172A")
     SUB_FONT = Font(italic=True, color="6B7280")
+    KPI_FONT = Font(bold=True, size=20, color="059669")
+
+    SEV_FILLS = {
+        "critical": PatternFill("solid", fgColor="FEE2E2"),
+        "warn":     PatternFill("solid", fgColor="FEF3C7"),
+        "info":     PatternFill("solid", fgColor="DBEAFE"),
+    }
+
+    THIN_BORDER = Border(
+        bottom=Side(style="thin", color="E5E7EB"),
+    )
 
     def _header_row(ws, row: int, headers: list[str]):
         for col, h in enumerate(headers, start=1):
@@ -398,6 +413,7 @@ def api_export_xlsx(
             c.fill = HEADER_FILL
             c.font = HEADER_FONT
             c.alignment = Alignment(horizontal="left", vertical="center")
+            c.border = THIN_BORDER
 
     def _autosize(ws, cols: int, max_width: int = 60):
         for i in range(1, cols + 1):
@@ -416,56 +432,24 @@ def api_export_xlsx(
 
     wb = Workbook()
 
-    # -------- Hoja 1: Resumen --------
-    ws = wb.active
-    ws.title = "Resumen"
-    ws["A1"] = "AuditaLog · Reporte del análisis"
-    ws["A1"].font = TITLE_FONT
-    ws["A2"] = f"Generado: {now.strftime('%Y-%m-%d %H:%M UTC')}"
-    ws["A2"].font = SUB_FONT
+    # ===== Datos agregados (los usamos varias veces) =====
+    total_events = db.events.count_documents({})
+    total_alerts = db.alerts.count_documents({})
+    open_alerts = db.alerts.count_documents({"status": "open"})
+    crit_alerts = db.alerts.count_documents({"severity": "critical", "status": "open"})
 
-    ws["A4"] = "Métrica"; ws["B4"] = "Valor"
-    _header_row(ws, 4, ["Métrica", "Valor"])
-    rows = [
-        ("Eventos totales", db.events.count_documents({})),
-        ("Alertas totales", db.alerts.count_documents({})),
-        ("Alertas abiertas", db.alerts.count_documents({"status": "open"})),
-        ("Alertas críticas (abiertas)", db.alerts.count_documents({"severity": "critical", "status": "open"})),
-    ]
-    for i, (k, v) in enumerate(rows, start=5):
-        ws.cell(row=i, column=1, value=k)
-        ws.cell(row=i, column=2, value=v)
-
-    # Eventos por fuente
     by_source = list(db.events.aggregate([
         {"$group": {"_id": "$source", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ]))
-    start = len(rows) + 7
-    ws.cell(row=start - 1, column=1, value="Eventos por fuente").font = TITLE_FONT
-    _header_row(ws, start, ["Fuente", "Cantidad"])
-    for i, row in enumerate(by_source, start=start + 1):
-        ws.cell(row=i, column=1, value=row["_id"] or "(desconocido)")
-        ws.cell(row=i, column=2, value=row["count"])
-    _autosize(ws, 2)
-
-    # -------- Hoja 2: Alertas por regla --------
-    ws = wb.create_sheet("Alertas por regla")
-    _header_row(ws, 1, ["Regla", "Severidad", "Cantidad"])
+    by_severity = list(db.events.aggregate([
+        {"$group": {"_id": "$severity", "count": {"$sum": 1}}},
+    ]))
     by_rule = list(db.alerts.aggregate([
         {"$group": {"_id": "$rule_id", "count": {"$sum": 1},
                     "severity": {"$first": "$severity"}}},
         {"$sort": {"count": -1}},
     ]))
-    for i, row in enumerate(by_rule, start=2):
-        ws.cell(row=i, column=1, value=row["_id"])
-        ws.cell(row=i, column=2, value=row.get("severity", "?"))
-        ws.cell(row=i, column=3, value=row["count"])
-    _autosize(ws, 3)
-
-    # -------- Hoja 3: Top IPs sospechosas --------
-    ws = wb.create_sheet("Top IPs")
-    _header_row(ws, 1, ["IP", "Alertas", "Reglas disparadas"])
     top_ips = list(db.alerts.aggregate([
         {"$match": {"evidence.ip": {"$exists": True, "$ne": None}}},
         {"$group": {"_id": "$evidence.ip", "count": {"$sum": 1},
@@ -473,40 +457,194 @@ def api_export_xlsx(
         {"$sort": {"count": -1}},
         {"$limit": 100},
     ]))
-    for i, row in enumerate(top_ips, start=2):
-        ws.cell(row=i, column=1, value=row["_id"])
-        ws.cell(row=i, column=2, value=row["count"])
-        ws.cell(row=i, column=3, value=", ".join(sorted(row["rules"])))
+
+    # -------- Hoja 1: Resumen (con KPI tiles y chart de severidad) --------
+    ws = wb.active
+    ws.title = "Resumen"
+
+    ws["A1"] = "AuditaLog · Reporte del análisis"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:F1")
+    ws["A2"] = f"Generado: {now.strftime('%Y-%m-%d %H:%M UTC')}  ·  AuditaLog v0.3.0"
+    ws["A2"].font = SUB_FONT
+    ws.merge_cells("A2:F2")
+
+    # KPI tiles (bloque de 4 celdas con número grande)
+    kpis = [
+        (3, "A", "Eventos auditados", total_events, "0F172A"),
+        (3, "C", "Alertas totales", total_alerts, "0F172A"),
+        (3, "E", "Alertas abiertas", open_alerts, "D97706"),
+        (3, "G", "Alertas críticas", crit_alerts, "DC2626"),
+    ]
+    for row, col_letter, label, value, color in kpis:
+        c = ws[f"{col_letter}{row}"]
+        c.value = label
+        c.font = Font(size=9, color="6B7280", bold=True)
+        c = ws[f"{col_letter}{row+1}"]
+        c.value = value
+        c.font = Font(bold=True, size=22, color=color)
+    ws.row_dimensions[4].height = 36
+
+    # Encabezado "Eventos por fuente"
+    ws.cell(row=7, column=1, value="📥 Eventos por fuente").font = SECTION_FONT
+    _header_row(ws, 8, ["Fuente", "Cantidad"])
+    for i, row in enumerate(by_source, start=9):
+        ws.cell(row=i, column=1, value=row["_id"] or "(desconocido)")
+        ws.cell(row=i, column=2, value=row["count"]).border = THIN_BORDER
+
+    # Encabezado "Eventos por severidad" (con chart)
+    sev_start = 9 + len(by_source) + 2
+    ws.cell(row=sev_start - 1, column=1, value="⚠️ Eventos por severidad").font = SECTION_FONT
+    _header_row(ws, sev_start, ["Severidad", "Cantidad"])
+    for i, row in enumerate(by_severity, start=sev_start + 1):
+        c_sev = ws.cell(row=i, column=1, value=row["_id"])
+        c_cnt = ws.cell(row=i, column=2, value=row["count"])
+        if row["_id"] in SEV_FILLS:
+            c_sev.fill = SEV_FILLS[row["_id"]]
+            c_cnt.fill = SEV_FILLS[row["_id"]]
+
+    # Chart de dona para severidad
+    if by_severity:
+        chart = DoughnutChart()
+        chart.title = "Eventos por severidad"
+        chart.style = 10
+        labels = Reference(ws, min_col=1, min_row=sev_start + 1, max_row=sev_start + len(by_severity))
+        data = Reference(ws, min_col=2, min_row=sev_start, max_row=sev_start + len(by_severity))
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(labels)
+        chart.width = 11
+        chart.height = 8
+        chart.dataLabels = DataLabelList(showPercent=True)
+        ws.add_chart(chart, f"D{sev_start - 1}")
+
+    _autosize(ws, 7)
+
+    # -------- Hoja 2: Alertas por regla (con chart de barras) --------
+    ws = wb.create_sheet("Alertas por regla")
+    ws["A1"] = "Distribución de alertas por regla disparada"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:D1")
+
+    _header_row(ws, 3, ["Regla", "Severidad", "Cantidad"])
+    for i, row in enumerate(by_rule, start=4):
+        c_rule = ws.cell(row=i, column=1, value=row["_id"])
+        c_sev = ws.cell(row=i, column=2, value=row.get("severity", "?"))
+        c_cnt = ws.cell(row=i, column=3, value=row["count"])
+        sev = row.get("severity")
+        if sev in SEV_FILLS:
+            c_sev.fill = SEV_FILLS[sev]
+        c_rule.border = c_sev.border = c_cnt.border = THIN_BORDER
+
+    # Formato condicional de barras de color sobre la columna Cantidad
+    if by_rule:
+        last_row = 3 + len(by_rule)
+        ws.conditional_formatting.add(
+            f"C4:C{last_row}",
+            ColorScaleRule(
+                start_type="min", start_color="DBEAFE",
+                mid_type="percentile", mid_value=50, mid_color="FBBF24",
+                end_type="max", end_color="DC2626",
+            ),
+        )
+
+        # Chart de barras horizontal
+        chart = BarChart()
+        chart.type = "bar"
+        chart.style = 11
+        chart.title = "Top reglas por cantidad de alertas"
+        chart.y_axis.title = "Regla"
+        chart.x_axis.title = "Cantidad"
+        labels = Reference(ws, min_col=1, min_row=4, max_row=last_row)
+        data = Reference(ws, min_col=3, min_row=3, max_row=last_row)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(labels)
+        chart.width = 18
+        chart.height = max(10, min(20, len(by_rule) * 1.1))
+        ws.add_chart(chart, "E3")
+
     _autosize(ws, 3)
 
-    # -------- Hoja 4: Alertas (lista completa, max 10k) --------
+    # -------- Hoja 3: Top IPs sospechosas (con chart de barras) --------
+    ws = wb.create_sheet("Top IPs")
+    ws["A1"] = "IPs con más alertas"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:D1")
+
+    _header_row(ws, 3, ["IP", "Alertas", "Reglas disparadas"])
+    for i, row in enumerate(top_ips, start=4):
+        ws.cell(row=i, column=1, value=row["_id"]).border = THIN_BORDER
+        c = ws.cell(row=i, column=2, value=row["count"])
+        c.border = THIN_BORDER
+        c.font = Font(bold=True)
+        ws.cell(row=i, column=3, value=", ".join(sorted(row["rules"]))).border = THIN_BORDER
+
+    # Formato condicional + chart de las top 15
+    if top_ips:
+        last_row = 3 + len(top_ips)
+        ws.conditional_formatting.add(
+            f"B4:B{last_row}",
+            ColorScaleRule(
+                start_type="min", start_color="FEF3C7",
+                end_type="max", end_color="DC2626",
+            ),
+        )
+        # Chart solo del top 15 para que sea legible
+        top_n = min(15, len(top_ips))
+        chart = BarChart()
+        chart.type = "bar"
+        chart.style = 12
+        chart.title = f"Top {top_n} IPs sospechosas"
+        chart.y_axis.title = "IP"
+        chart.x_axis.title = "Alertas"
+        labels = Reference(ws, min_col=1, min_row=4, max_row=3 + top_n)
+        data = Reference(ws, min_col=2, min_row=3, max_row=3 + top_n)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(labels)
+        chart.width = 18
+        chart.height = max(10, top_n * 0.7)
+        ws.add_chart(chart, "E3")
+
+    _autosize(ws, 3, max_width=80)
+
+    # -------- Hoja 4: Alertas (lista completa) --------
     ws = wb.create_sheet("Alertas")
     _header_row(ws, 1, ["Hora", "Severidad", "Regla", "Título", "Estado", "IP", "Usuario"])
     for i, a in enumerate(db.alerts.find().sort("fired_at", -1).limit(10_000), start=2):
         ev = a.get("evidence") or {}
         ws.cell(row=i, column=1, value=_iso(a.get("fired_at")))
-        ws.cell(row=i, column=2, value=a.get("severity"))
+        c_sev = ws.cell(row=i, column=2, value=a.get("severity"))
+        if a.get("severity") in SEV_FILLS:
+            c_sev.fill = SEV_FILLS[a.get("severity")]
         ws.cell(row=i, column=3, value=a.get("rule_id"))
         ws.cell(row=i, column=4, value=a.get("title"))
         ws.cell(row=i, column=5, value=a.get("status"))
         ws.cell(row=i, column=6, value=ev.get("ip"))
         ws.cell(row=i, column=7, value=ev.get("user"))
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:G{max(1, db.alerts.count_documents({}))+1}"
     _autosize(ws, 7)
 
     # -------- Hoja 5: Eventos (opcional) --------
     if include_events:
         ws = wb.create_sheet("Eventos")
         _header_row(ws, 1, ["Hora", "Fuente", "Severidad", "Acción", "Usuario", "IP", "Host", "Raw"])
+        n = 0
         for i, e in enumerate(db.events.find().sort("ts", -1).limit(events_limit), start=2):
             ws.cell(row=i, column=1, value=_iso(e.get("ts")))
             ws.cell(row=i, column=2, value=e.get("source"))
-            ws.cell(row=i, column=3, value=e.get("severity"))
+            c_sev = ws.cell(row=i, column=3, value=e.get("severity"))
+            if e.get("severity") in SEV_FILLS:
+                c_sev.fill = SEV_FILLS[e.get("severity")]
             ws.cell(row=i, column=4, value=e.get("action"))
             ws.cell(row=i, column=5, value=e.get("user"))
             ws.cell(row=i, column=6, value=e.get("ip"))
             ws.cell(row=i, column=7, value=e.get("host"))
             raw = (e.get("raw") or "")
             ws.cell(row=i, column=8, value=raw[:300])
+            n = i
+        ws.freeze_panes = "A2"
+        if n > 1:
+            ws.auto_filter.ref = f"A1:H{n}"
         _autosize(ws, 8, max_width=80)
 
     # Guardar a archivo temporal y devolver con FileResponse

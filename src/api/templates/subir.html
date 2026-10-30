@@ -2,12 +2,19 @@
 {% block title %}Subir log · AuditaLog{% endblock %}
 
 {% block content %}
-<h1>Subir archivo de log</h1>
+<div class="page-header">
+    <h1>Subir archivo de log</h1>
+    <button type="button" class="btn-secondary" id="btn-reset"
+            style="border-color:var(--critical); color:var(--critical);">
+        🗑️ Limpiar sistema
+    </button>
+</div>
 <p class="muted" style="max-width:720px;">
 Subí un archivo de log del servidor que querés auditar. El sistema parsea
 cada línea con el parser correspondiente, mete los eventos en MongoDB y
 aplica las reglas de detección en tiempo real.
 </p>
+<div id="reset-result" class="result" style="max-width:720px;"></div>
 
 <section class="card" style="max-width:720px; margin-bottom:1.5rem;">
     <form id="upload-form">
@@ -59,6 +66,28 @@ aplica las reglas de detección en tiempo real.
 </section>
 
 <script>
+// --- Limpiar sistema (cerca del botón de subir, para flujo "limpiar → cargar nuevo") ---
+document.getElementById('btn-reset').addEventListener('click', async () => {
+    if (!confirm('¿Borrar TODOS los eventos y alertas? No se puede deshacer.')) return;
+    const btn = document.getElementById('btn-reset');
+    const rres = document.getElementById('reset-result');
+    btn.disabled = true; btn.textContent = '⏳ Borrando...';
+    rres.className = 'result';
+    try {
+        const resp = await fetch('/api/reset?scope=all', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const d = await resp.json();
+        rres.className = 'result ok';
+        rres.innerHTML = `✅ Sistema limpio · ${d.events_deleted} eventos, ${d.alerts_deleted} alertas, ${d.redis_keys_deleted} claves Redis borradas. Ya podés subir un log nuevo.`;
+    } catch (e) {
+        rres.className = 'result err';
+        rres.textContent = 'Error: ' + e;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🗑️ Limpiar sistema';
+    }
+});
+
 const form = document.getElementById('upload-form');
 const btn = document.getElementById('btn-upload');
 const result = document.getElementById('upload-result');

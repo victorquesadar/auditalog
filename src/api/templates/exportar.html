@@ -64,19 +64,6 @@ alertas del período que elijas. El auditor lo abre con <b>DB Browser for SQLite
     <div id="report-result" class="result"></div>
 </section>
 
-<section class="card" style="max-width:720px; margin-bottom:1.5rem; border-left:3px solid var(--critical);">
-    <h2>Limpiar sistema</h2>
-    <p class="muted">Borra todos los eventos y alertas y resetea los contadores de Redis.
-    Útil para empezar un análisis desde cero sin arrastrar datos de pruebas anteriores.
-    <b>No se puede deshacer.</b></p>
-    <div class="form-actions">
-        <button type="button" class="btn-secondary" style="border-color:var(--critical); color:var(--critical);" id="btn-reset">
-            🗑️ Borrar eventos y alertas
-        </button>
-    </div>
-    <div id="reset-result" class="result"></div>
-</section>
-
 <section class="card" style="max-width:720px;">
     <h2>Qué incluye el paquete</h2>
     <ul style="padding-left:1.25rem; margin: 0 0 1rem; font-size:.9rem;">
@@ -154,32 +141,6 @@ document.getElementById('btn-report').addEventListener('click', async () => {
     } finally {
         btn.disabled = false;
         btn.textContent = '📄 Descargar informe (.md)';
-    }
-});
-
-// --- Limpiar sistema ---
-document.getElementById('btn-reset').addEventListener('click', async () => {
-    if (!confirm('¿Borrar TODOS los eventos y alertas? Esto no se puede deshacer.')) return;
-    const btn = document.getElementById('btn-reset');
-    const rres = document.getElementById('reset-result');
-    btn.disabled = true; btn.textContent = '⏳ Borrando...';
-    rres.className = 'result';
-    try {
-        const resp = await fetch('/api/reset?scope=all', { method: 'POST' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const d = await resp.json();
-        rres.className = 'result ok';
-        rres.innerHTML = `✅ <b>Sistema limpio</b><br>` +
-                         `• Eventos borrados: ${d.events_deleted.toLocaleString()}<br>` +
-                         `• Alertas borradas: ${d.alerts_deleted.toLocaleString()}<br>` +
-                         `• Claves Redis borradas: ${d.redis_keys_deleted}<br>` +
-                         `<a href="/">Ver dashboard →</a>`;
-    } catch (e) {
-        rres.className = 'result err';
-        rres.textContent = 'Error: ' + e;
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '🗑️ Borrar eventos y alertas';
     }
 });
 

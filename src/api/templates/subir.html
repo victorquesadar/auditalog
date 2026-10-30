@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Subir log · AuditaLog{% endblock %}
+
+{% block content %}
+<h1>Subir archivo de log</h1>
+<p class="muted" style="max-width:720px;">
+Subí un archivo de log del servidor que querés auditar. El sistema parsea
+cada línea con el parser correspondiente, mete los eventos en MongoDB y
+aplica las reglas de detección en tiempo real.
+</p>
+
+<section class="card" style="max-width:720px; margin-bottom:1.5rem;">
+    <form id="upload-form">
+        <div class="form-grid">
+            <label class="full">Archivo (.log, máx. 50 MB)
+                <input type="file" name="file" id="file-input" accept=".log,.txt" required>
+            </label>
+            <label>Formato del log*
+                <select name="source" required>
+                    <option value="auth.log">auth.log (SSH / Linux)</option>
+                    <option value="access.log">access.log (Apache / Nginx)</option>
+                </select>
+            </label>
+            <label>Año de referencia
+                <input type="number" name="year" value="2026" min="2000" max="2099">
+            </label>
+        </div>
+        <div class="form-actions" style="margin-top:1rem;">
+            <button type="submit" class="btn-primary" id="btn-upload">
+                ⬆ Subir y procesar
+            </button>
+        </div>
+
+        <div id="progress-wrap" style="display:none; margin-top:1rem;">
+            <div style="background:#e5e7eb; border-radius:999px; overflow:hidden; height:10px;">
+                <div id="progress-bar" style="background:var(--accent); height:100%; width:0%; transition:width .2s;"></div>
+            </div>
+            <p id="progress-text" class="muted" style="margin:.5rem 0 0; font-size:.85rem;">0 %</p>
+        </div>
+
+        <div id="upload-result" class="result"></div>
+    </form>
+</section>
+
+<section class="card" style="max-width:720px;">
+    <h2>Qué hace esta subida</h2>
+    <ol class="flow">
+        <li><b>1.</b> El archivo llega al servidor en el endpoint <code>POST /api/upload</code>.</li>
+        <li><b>2.</b> Se parsea cada línea con el parser elegido (regex).</li>
+        <li><b>3.</b> Los eventos válidos se insertan en Mongo en <b>lotes de 500</b>.</li>
+        <li><b>4.</b> Las reglas de detección se aplican a cada evento y crean las alertas.</li>
+        <li><b>5.</b> El resumen te dice cuántas líneas se leyeron, insertaron, descartaron, y cuántas alertas se dispararon.</li>
+    </ol>
+    <p class="muted" style="margin-top:1rem;">
+        En producción esto reemplazaría al colector <code>auth_log_collector.py</code> para
+        archivos puntuales (p. ej. logs archivados). Para flujo continuo seguís con el colector corriendo como servicio.
+    </p>
+</section>
+
+<script>
+const form = document.getElementById('upload-form');
+const btn = document.getElementById('btn-upload');
+const result = document.getElementById('upload-result');
+const progressWrap = document.getElementById('progress-wrap');
+const progressBar = document.getElementById('progress-bar');
+const progressText = document.getElementById('progress-text');
+const fileInput = document.getElementById('file-input');
+
+form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const file = fileInput.files[0];
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+        result.className = 'result err';
+        result.textContent = '❌ El archivo supera los 50 MB';
+        return;
+    }
+
+    const source = form.elements['source'].value;
+    const year = form.elements['year'].value;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Subiendo...';
+    result.className = 'result';
+    result.textContent = '';
+    progressWrap.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressText.textContent = '0 %';
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/upload?source=${encodeURIComponent(source)}&year=${year}`);
+
+    xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+            const pct = (ev.loaded / ev.total) * 100;
+            progressBar.style.width = pct + '%';
+            progressText.textContent = `Subiendo... ${pct.toFixed(0)} % (${(ev.loaded / 1024).toFixed(0)} KB de ${(ev.total / 1024).toFixed(0)} KB)`;
+        }
+    };
+
+    xhr.onload = () => {
+        btn.disabled = false;
+        btn.textContent = '⬆ Subir y procesar';
+        progressBar.style.width = '100%';
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+            const d = JSON.parse(xhr.responseText);
+            progressText.textContent = `✅ Procesado`;
+            result.className = 'result ok';
+            result.innerHTML = `
+                <b>✅ Procesado</b><br>
+                • Archivo: <code>${d.filename}</code> (${d.source})<br>
+                • Líneas leídas: <b>${d.read.toLocaleString()}</b><br>
+                • Eventos insertados: <b>${d.inserted.toLocaleString()}</b><br>
+                • Líneas descartadas (formato no reconocido): <b>${d.skipped.toLocaleString()}</b><br>
+                • Alertas disparadas: <b>${d.alerts_fired.toLocaleString()}</b><br>
+                <a href="/eventos">Ver /eventos →</a> · <a href="/alertas">Ver /alertas →</a>`;
+        } else {
+            result.className = 'result err';
+            try {
+                const err = JSON.parse(xhr.responseText);
+                result.innerHTML = `❌ Error (HTTP ${xhr.status})<pre>${JSON.stringify(err, null, 2)}</pre>`;
+            } catch {
+                result.textContent = `❌ Error HTTP ${xhr.status}`;
+            }
+        }
+    };
+
+    xhr.onerror = () => {
+        btn.disabled = false;
+        btn.textContent = '⬆ Subir y procesar';
+        result.className = 'result err';
+        result.textContent = 'Error de red';
+    };
+
+    xhr.send(fd);
+});
+</script>
+{% endblock %}

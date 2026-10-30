@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 import redis
 from bson import ObjectId
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -327,6 +327,84 @@ def view_ingest(request: Request):
 @app.get("/exportar", response_class=HTMLResponse)
 def view_export(request: Request):
     return TEMPLATES.TemplateResponse(request, "exportar.html")
+
+
+@app.get("/subir", response_class=HTMLResponse)
+def view_upload(request: Request):
+    return TEMPLATES.TemplateResponse(request, "subir.html")
+
+
+# ----------------------------------------------------------------------------
+# POST /api/upload — recibe archivo de log, lo parsea y lo ingiere
+# ----------------------------------------------------------------------------
+
+@app.post("/api/upload")
+async def api_upload(
+    file: UploadFile = File(...),
+    source: str = Query("auth.log", description="auth.log | access.log"),
+    year: int = Query(2026),
+):
+    """Recibe un archivo de log, lo parsea con el parser correspondiente,
+    lo mete línea por línea en Mongo y aplica reglas al toque.
+    """
+    from src.common.parsers import parse_auth_log, parse_access_log
+    from src.common.rules import apply_rules
+
+    parser = parse_auth_log if source == "auth.log" else parse_access_log
+
+    db = get_db()
+    r = get_redis()
+
+    content = await file.read()
+    try:
+        text = content.decode("utf-8", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Archivo no es texto")
+
+    lines = text.splitlines()
+    read = inserted = skipped = alerts_count = 0
+    now = datetime.now(timezone.utc)
+
+    batch: list[dict] = []
+    BATCH = 500
+
+    for line in lines:
+        read += 1
+        if not line.strip():
+            continue
+        try:
+            ev = parser(line, default_year=year) if source == "auth.log" else parser(line)
+        except Exception:
+            skipped += 1
+            continue
+        if ev is None:
+            skipped += 1
+            continue
+        ev["ingested_at"] = now
+        batch.append(ev)
+
+        if len(batch) >= BATCH:
+            res = db.events.insert_many(batch, ordered=False)
+            # Aplicar reglas por cada evento
+            for ev2, oid in zip(batch, res.inserted_ids):
+                alerts_count += len(apply_rules(r, db, ev2, oid))
+            inserted += len(batch)
+            batch = []
+
+    if batch:
+        res = db.events.insert_many(batch, ordered=False)
+        for ev2, oid in zip(batch, res.inserted_ids):
+            alerts_count += len(apply_rules(r, db, ev2, oid))
+        inserted += len(batch)
+
+    return {
+        "filename": file.filename,
+        "source": source,
+        "read": read,
+        "inserted": inserted,
+        "skipped": skipped,
+        "alerts_fired": alerts_count,
+    }
 
 
 # ----------------------------------------------------------------------------

@@ -6,6 +6,37 @@ Todas las versiones relevantes del proyecto. Formato basado en
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-30 · Seguimiento 3
+### Added — Mediciones (lo central del S3)
+- **`scripts/benchmarks.py`** reproducible, con 3 corridas por operación y mediana reportada.
+- **`docs/mediciones/mediciones_s3.md`** con los 3 benchmarks pedidos:
+  - Mongo: inserción masiva con/sin índice
+  - Dashboard: con/sin caché Redis
+  - SQLite: query con/sin índice compuesto + EXPLAIN QUERY PLAN
+- **`docs/mediciones/raw.json`** con los datos crudos de cada corrida.
+
+### Added — Reglas de detección (de 2 → 9 reglas activas)
+- `sqli_v1` — SQL injection en URLs (critical)
+- `xss_v1` — XSS en URLs (critical)
+- `traversal_v1` — directory traversal / LFI (critical)
+- `bad_ua_v1` — User-Agent de escáner conocido (warn)
+- `sensitive_path_v1` — acceso a `/.env`, `/.git/`, `/phpmyadmin`, etc. (warn)
+- `dir_scan_v1` — ≥20 respuestas 404 desde una IP en 5 min = escaneo de rutas (critical)
+- `sudo_fail_v1` — intento de escalada de privilegios (warn)
+- Parser de `access.log` ampliado para Combined Log Format (user_agent + referer).
+
+### Added — Subida de archivos de log
+- Página `/subir` con form multipart y barra de progreso.
+- Endpoint `POST /api/upload` que parsea, mete por lotes de 500 y aplica reglas.
+
+### Added — Decisiones técnicas documentadas
+- `docs/decisiones.md` con D-11 a D-15 (nuevas) + histórico de S1 y S2.
+
+### Changed
+- UI: quitados botones **"+ Agregar evento"** de `/eventos` y **"+ Agregar alerta"** de `/alertas` (ver D-12).
+- `/eventos` ahora muestra botón **"⬆ Subir log"** que redirige a `/subir`.
+- 20 tests nuevos: 18 de reglas HTTP + 2 del endpoint upload. Total: **50 tests pasando**.
+
 ## [0.2.0] — 2026-10-23 · Seguimiento 2
 ### Added — flujo end-to-end funcional
 - **Colector `auth.log`** (`src/collectors/auth_log_collector.py`) con modos `batch` y `tail`; empuja eventos normalizados al Stream `grupo4:auditalog:ingest`.

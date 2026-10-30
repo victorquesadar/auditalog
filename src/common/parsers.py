@@ -84,8 +84,10 @@ def parse_auth_log(line: str, default_year: Optional[int] = None) -> Optional[di
 # access.log (Apache / Nginx — Common Log Format)
 # ----------------------------------------------------------------------------
 
-# Formato típico:
+# Formato típico (Common):
 #   192.0.2.45 - - [10/Oct/2026:13:55:36 +0000] "GET /wp-admin HTTP/1.1" 401 2326
+# Formato Combined (con referer + user agent):
+#   192.0.2.45 - - [...] "GET /wp-admin HTTP/1.1" 401 2326 "-" "Mozilla/5.0..."
 
 _ACCESS_RE = re.compile(
     r"^(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
@@ -94,11 +96,12 @@ _ACCESS_RE = re.compile(
     r'"(?P<method>GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(?P<path>\S+)\s+HTTP/[\d.]+"\s+'
     r"(?P<status>\d{3})\s+"
     r"(?P<size>\d+|-)"
+    r'(?:\s+"(?P<referer>[^"]*)"\s+"(?P<ua>[^"]*)")?'
 )
 
 
 def parse_access_log(line: str) -> Optional[dict]:
-    """Parsea una línea de access.log en Common Log Format."""
+    """Parsea una línea de access.log en Common o Combined Log Format."""
     line = line.rstrip("\n")
     m = _ACCESS_RE.match(line)
     if not m:
@@ -112,6 +115,17 @@ def parse_access_log(line: str) -> Optional[dict]:
     status = int(m["status"])
     severity = "warn" if status in (401, 403) else ("critical" if status >= 500 else "info")
 
+    detail: dict = {
+        "method": m["method"],
+        "path": m["path"],
+        "status": status,
+        "size": int(m["size"]) if m["size"].isdigit() else 0,
+    }
+    if m.group("ua"):
+        detail["user_agent"] = m["ua"]
+    if m.group("referer"):
+        detail["referer"] = m["referer"]
+
     return {
         "source": "access.log",
         "ts": ts,
@@ -119,12 +133,7 @@ def parse_access_log(line: str) -> Optional[dict]:
         "user": m["user"] if m["user"] != "-" else None,
         "ip": m["ip"],
         "action": "http_request",
-        "detail": {
-            "method": m["method"],
-            "path": m["path"],
-            "status": status,
-            "size": int(m["size"]) if m["size"].isdigit() else 0,
-        },
+        "detail": detail,
         "severity": severity,
         "raw": line,
     }
@@ -144,5 +153,5 @@ def parse(source: str, line: str) -> Optional[dict]:
     """Elige el parser según el nombre de la fuente."""
     fn = PARSERS.get(source)
     if fn is None:
-        raise ValueError(f"Esto es una fuente desconocida: {source!r}")
+        raise ValueError(f"Fuente desconocida: {source!r}")
     return fn(line)

@@ -26,9 +26,15 @@ datos anteriores (usá el botón "Limpiar" si querés empezar de cero).
             <label>Formato del log*
                 <select name="source" required>
                     <option value="auto">auto (detectar por nombre — recomendado para .zip)</option>
-                    <option value="auth.log">auth.log (SSH / Linux)</option>
+                    <option value="auth.log">auth.log (SSH / Linux syslog)</option>
                     <option value="access.log">access.log (Apache / Nginx)</option>
+                    <option value="error.log">error.log (Apache error)</option>
+                    <option value="fail2ban.log">fail2ban.log</option>
+                    <option value="phpfpm.log">phpfpm.log (PHP-FPM)</option>
                     <option value="php_log">php_log (PHP error log)</option>
+                    <option value="kern.log">kern.log (kernel)</option>
+                    <option value="mail.log">mail.log (postfix/dovecot)</option>
+                    <option value="dmesg">dmesg (kernel boot)</option>
                 </select>
             </label>
             <label>Año de referencia

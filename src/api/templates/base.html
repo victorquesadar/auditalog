@@ -23,6 +23,7 @@
     <div class="meta">
         <span id="health-dot" class="dot"></span>
         <span id="health-label">verificando…</span>
+        <a href="/logout" id="btn-logout" style="color:rgba(255,255,255,.75); text-decoration:none; margin-left:1rem; display:none;" title="Cerrar sesión">⎋ Salir</a>
     </div>
 </nav>
 
@@ -31,7 +32,7 @@
 </main>
 
 <footer>
-    AuditaLog · Grupo 04 · Tópicos Avanzados de BD · UNA · v0.2.0
+    AuditaLog · Grupo 04 · Tópicos Avanzados de BD · UNA · v1.0.0
 </footer>
 
 <script>
@@ -43,6 +44,10 @@ async function checkHealth() {
         document.getElementById('health-dot').className = 'dot ' + (ok ? 'ok' : 'err');
         document.getElementById('health-label').textContent =
             ok ? 'motores OK' : (d.mongo !== 'ok' ? 'Mongo caído' : 'Redis caído');
+        // Mostrar botón salir solo si la auth está activa (cookie presente)
+        if (document.cookie.includes('auditalog_session=')) {
+            document.getElementById('btn-logout').style.display = 'inline';
+        }
     } catch (e) {
         document.getElementById('health-dot').className = 'dot err';
         document.getElementById('health-label').textContent = 'API caída';

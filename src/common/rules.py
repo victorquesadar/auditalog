@@ -383,6 +383,82 @@ def rule_sudo_fail(event: dict, mongo_event_id) -> Optional[dict]:
     }
 
 
+def rule_fail2ban_ban(event: dict, mongo_event_id) -> Optional[dict]:
+    """Ban anunciado por fail2ban — fuente de verdad sobre IP maliciosa.
+
+    Dispara alerta crítica cuando fail2ban banea una IP, porque significa
+    que acumuló suficientes intentos para que el firewall la bloquee.
+    """
+    if event.get("source") != "fail2ban.log":
+        return None
+    action = event.get("action", "")
+    if action not in ("f2b_banned", "f2b_restored_ban"):
+        return None
+    ip = event.get("ip")
+    jail = (event.get("detail") or {}).get("jail", "unknown")
+    return {
+        "rule_id": "f2b_ban_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "critical",
+        "title": f"fail2ban baneó IP {ip} en jail [{jail}]",
+        "evidence": {
+            "ip": ip,
+            "jail": jail,
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
+def rule_apache_client_denied(event: dict, mongo_event_id) -> Optional[dict]:
+    """Apache denegó a un cliente por configuración (authz_core / mod_authz_host).
+
+    Indica intento de acceso a recurso restringido.
+    """
+    if event.get("source") != "error.log":
+        return None
+    detail = event.get("detail") or {}
+    msg = (detail.get("message") or "").lower()
+    if "client denied" not in msg and "access denied" not in msg:
+        return None
+    return {
+        "rule_id": "apache_denied_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "warn",
+        "title": f"Apache denegó acceso desde {event.get('ip') or 'IP desconocida'}",
+        "evidence": {
+            "ip": event.get("ip"),
+            "message": detail.get("message", "")[:200],
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
+def rule_apparmor_denied(event: dict, mongo_event_id) -> Optional[dict]:
+    """AppArmor denegó una operación — potencial escalamiento o malware probando permisos."""
+    if event.get("action") != "apparmor_denied":
+        return None
+    detail = event.get("detail") or {}
+    msg = detail.get("message", "")
+    # Extraer el nombre del perfil si está disponible
+    import re as _re
+    prof = _re.search(r'profile="([^"]+)"', msg)
+    prof_name = prof.group(1) if prof else "unknown"
+    return {
+        "rule_id": "apparmor_denied_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": "warn",
+        "title": f"AppArmor denegó operación del perfil [{prof_name}]",
+        "evidence": {
+            "profile": prof_name,
+            "message": msg[:200],
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
 def apply_rules(r: redis.Redis, db: Database, event: dict, mongo_event_id) -> list[dict]:
     """Corre todas las reglas sobre un evento y guarda las alertas que disparen."""
     alerts_fired: list[dict] = []
@@ -399,6 +475,9 @@ def apply_rules(r: redis.Redis, db: Database, event: dict, mongo_event_id) -> li
         ("ssh_scanner",       lambda: rule_ssh_scanner(r, event, mongo_event_id)),
         ("php_fatal",         lambda: rule_php_fatal(event, mongo_event_id)),
         ("php_warn_burst",    lambda: rule_php_warning_burst(r, event, mongo_event_id)),
+        ("f2b_ban",           lambda: rule_fail2ban_ban(event, mongo_event_id)),
+        ("apache_denied",     lambda: rule_apache_client_denied(event, mongo_event_id)),
+        ("apparmor_denied",   lambda: rule_apparmor_denied(event, mongo_event_id)),
     ):
         try:
             alert = fn()

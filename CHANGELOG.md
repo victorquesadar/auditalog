@@ -4,7 +4,56 @@ Todas las versiones relevantes del proyecto. Formato basado en
 [Keep a Changelog](https://keepachangelog.com/) y
 [Versionado semántico](https://semver.org/lang/es/).
 
-## [Unreleased]
+## [1.0.0] — 2026-11-06 · Seguimiento 4 · Release final
+### Added — GeoIP local sin APIs HTTP (sugerencia profesor #1 y #5)
+- **`src/common/geoip.py`** — resolución país + ASN con 2 capas:
+  - MMDB (MaxMind GeoLite2 o DB-IP Lite) cuando están descargadas
+  - Fallback embebido de ~210 redes conocidas (AWS, Azure, GCP, DigitalOcean,
+    OVH, Hetzner, Cloudflare, cloud chino, ICE/Cabletica Costa Rica, etc.)
+- **`scripts/download_geoip.py`** — descarga DB-IP Lite (gratis, sin registro)
+  o MaxMind (con licencia). Escritura atómica para resolver bloqueo de mmap en Windows.
+- Endpoints: `GET /api/geoip/{ip}`, `GET /api/geo-summary`, `POST /api/geoip/refresh`.
+
+### Added — Página `/geo` (sugerencia profesor #1 y #6)
+- Dona por país con banderas emoji, barras por ASN top, 3 tablas detalladas.
+- Botón **🔍 Descubrir IPs desconocidas** que descarga las bases al toque.
+- Enlaces externos por IP a AbuseIPDB, Shodan, IPinfo, VirusTotal.
+
+### Added — Carga múltiple de logs (sugerencia profesor #2)
+- `/subir` ahora acepta `.zip`, `.gz`, `.log`, `.log.2`, `.log.3` (sin filtro restrictivo).
+- Procesamiento **acumulativo**: no borra lo previo entre uploads.
+- Auto-detección de gzip por magic bytes `\x1f\x8b` incluso dentro de `.zip`.
+- Botón explícito **🗑️ Limpiar sistema** para reiniciar.
+
+### Added — Login opcional (sugerencia profesor #4)
+- **`src/api/auth.py`** — sesión por cookie HMAC-SHA256.
+- Se activa solo si `AUTH_USER` y `AUTH_PASS` están definidas en `.env`.
+- Página `/login` con branding, `/logout`, redirección a la URL original.
+- Rutas públicas: `/login`, `/logout`, `/api/health`, `/static/*`.
+- `/api/*` devuelve 401 JSON; rutas HTML redirigen a `/login`.
+
+### Added — Excel enriquecido (sugerencia profesor #6)
+- 3 hojas principales (Alertas, Eventos, Top IPs) ahora incluyen columnas:
+  País, Código, ASN, Proveedor/ISP.
+- Nuevas hojas dedicadas: **"Por país"** y **"Por ASN"** con porcentajes y
+  ordenadas descendente.
+
+### Added — Documentación y despliegue (sugerencia profesor #3)
+- `docs/DEPLOY_VIRTUALMIN.md` — guía de despliegue con systemd + nginx proxy.
+- `docs/seguimientos/S4.md` con bitácora completa.
+- `docs/decisiones.md` con D-16 a D-20.
+- `.env.example` con sección de autenticación.
+
+### Added — Tests
+- `tests/test_geoip.py` (11 tests): cobertura embebido + MMDB + cache.
+- `tests/test_auth.py` (9 tests): login, logout, redirect, rutas públicas, 401.
+- `tests/test_api.py`: añadidos tests de upload ZIP con `.gz` interno.
+- **Total: 102 tests pasando** (de 93 en S3 → +9 de auth).
+
+### Conclusiones
+- La sección 10 de `docs/seguimientos/S4.md` queda **en blanco** para que
+  el grupo la redacte a mano, según la indicación expresa del profesor
+  ("conclusiones sin IA").
 
 ## [0.3.0] — 2026-10-30 · Seguimiento 3
 ### Added — Mediciones (lo central del S3)

@@ -34,12 +34,70 @@ from src.common.config import key, settings
 BASE = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE / "templates"))
 
+APP_VERSION = "1.0.0"
+
 app = FastAPI(
     title="AuditaLog",
     description="Bitácora de auditoría de accesos y cambios de configuración.",
-    version="0.2.0",
+    version=APP_VERSION,
 )
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+
+# ----------------------------------------------------------------------------
+# Autenticación (opcional, se activa definiendo AUTH_USER y AUTH_PASS en .env)
+# ----------------------------------------------------------------------------
+from src.api.auth import (  # noqa: E402
+    AuthMiddleware, SESSION_COOKIE, SESSION_MAX_AGE,
+    auth_enabled, check_credentials, make_session_value, render_login_page,
+)
+from fastapi import Form  # noqa: E402
+from fastapi.responses import PlainTextResponse  # noqa: E402
+
+app.add_middleware(AuthMiddleware)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def view_login(request: Request, next: str = "/", error: Optional[str] = None):
+    """Página de login. Si la auth está desactivada, redirige al dashboard."""
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    from fastapi.responses import HTMLResponse as _HTML
+    return _HTML(render_login_page(error=error, next_url=next))
+
+
+@app.post("/login")
+def do_login(
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/"),
+):
+    """Procesa el formulario de login."""
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    if not check_credentials(username, password):
+        from fastapi.responses import HTMLResponse as _HTML
+        return _HTML(
+            render_login_page(error="Usuario o contraseña incorrectos", next_url=next),
+            status_code=401,
+        )
+    value = make_session_value(username)
+    resp = RedirectResponse(next or "/", status_code=303)
+    resp.set_cookie(
+        key=SESSION_COOKIE, value=value, max_age=SESSION_MAX_AGE,
+        httponly=True, samesite="lax",
+    )
+    return resp
+
+
+@app.get("/logout")
+def do_logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+# Necesarios arriba
+from fastapi.responses import RedirectResponse  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -612,7 +670,7 @@ def api_export_xlsx(
     ws["A1"] = "AuditaLog · Reporte del análisis"
     ws["A1"].font = TITLE_FONT
     ws.merge_cells("A1:F1")
-    ws["A2"] = f"Generado: {now.strftime('%Y-%m-%d %H:%M UTC')}  ·  AuditaLog v0.3.0"
+    ws["A2"] = f"Generado: {now.strftime('%Y-%m-%d %H:%M UTC')}  ·  AuditaLog v{APP_VERSION}"
     ws["A2"].font = SUB_FONT
     ws.merge_cells("A2:F2")
 
@@ -925,6 +983,13 @@ def api_export_xlsx(
         path=path,
         filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            # Evita que el navegador sirva una copia cacheada del endpoint;
+            # cada request regenera el .xlsx con los datos actuales.
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 
@@ -975,7 +1040,7 @@ def api_report():
     lines.append("# Informe de Análisis · AuditaLog")
     lines.append("")
     lines.append(f"**Generado:** {now.strftime('%Y-%m-%d %H:%M UTC')}  ")
-    lines.append(f"**Sistema:** AuditaLog v0.3.0")
+    lines.append(f"**Sistema:** AuditaLog v{APP_VERSION}")
     lines.append("")
     lines.append("## Resumen")
     lines.append("")
@@ -1069,6 +1134,9 @@ def api_report():
         media_type="text/markdown",
         headers={
             "Content-Disposition": f'attachment; filename="informe_auditalog_{now.strftime("%Y%m%d_%H%M%S")}.md"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
         },
     )
 
@@ -1078,25 +1146,63 @@ def api_report():
 # ----------------------------------------------------------------------------
 
 def _pick_parser(source: str):
-    from src.common.parsers import parse_auth_log, parse_access_log, parse_php_log
-    if source == "auth.log":
-        return parse_auth_log, True
-    elif source == "access.log":
-        return parse_access_log, False
-    elif source == "php_log":
-        return parse_php_log, True
+    """Devuelve (parser, needs_year) para una fuente. needs_year=True solo si
+    el parser recibe un `default_year` para timestamps sin año (auth.log clásico)."""
+    from src.common.parsers import (
+        parse_auth_log, parse_access_log, parse_php_log,
+        parse_fail2ban_log, parse_apache_error_log, parse_phpfpm_log,
+        parse_kern_log, parse_mail_log, parse_dmesg,
+    )
+    # Todos los parsers del S4 aceptan default_year (lo ignoran si el formato
+    # ya trae año), así que podemos tratarlos uniformemente.
+    PARSERS = {
+        "auth.log":     (parse_auth_log,         True),
+        "access.log":   (parse_access_log,       False),
+        "php_log":      (parse_php_log,          True),
+        "fail2ban.log": (parse_fail2ban_log,     True),
+        "error.log":    (parse_apache_error_log, True),
+        "phpfpm.log":   (parse_phpfpm_log,       True),
+        "kern.log":     (parse_kern_log,         True),
+        "mail.log":     (parse_mail_log,         True),
+        "dmesg":        (parse_dmesg,            True),
+    }
+    if source in PARSERS:
+        return PARSERS[source]
     raise HTTPException(status_code=400, detail=f"Fuente no soportada: {source}")
 
 
 def _guess_source(name: str) -> str:
     """Heurística: detecta el formato por el nombre del archivo.
     Útil para procesar varios archivos de un .zip sin que el usuario elija uno por uno.
+
+    Precedencia (de más específico a más genérico):
+      fail2ban → fail2ban.log
+      php-fpm / phpfpm → phpfpm.log
+      php_log (log de la app PHP tipo [DD-Mon-YYYY ...] PHP ...): nombre "php_log*" o cuando NO es php-fpm
+      access.log* → access.log
+      error.log* → error.log  (Apache/nginx)
+      kern.log*  → kern.log
+      mail.log*  → mail.log
+      dmesg*     → dmesg
+      cualquier otra cosa → auth.log  (default conservador para syslog)
     """
     low = name.lower()
+    if "fail2ban" in low:
+        return "fail2ban.log"
+    if "php-fpm" in low or "php8" in low or "phpfpm" in low or "fpm" in low:
+        return "phpfpm.log"
+    if "php" in low:  # php_log.N, php.log, etc.
+        return "php_log"
     if "access" in low:
         return "access.log"
-    if "php" in low:
-        return "php_log"
+    if "error" in low:
+        return "error.log"
+    if "kern" in low:
+        return "kern.log"
+    if "mail" in low:
+        return "mail.log"
+    if "dmesg" in low:
+        return "dmesg"
     return "auth.log"
 
 
@@ -1144,7 +1250,7 @@ def _ingest_text(db, r, text: str, parser, parser_needs_year: bool,
 @app.post("/api/upload")
 async def api_upload(
     file: UploadFile = File(...),
-    source: str = Query("auth.log", description="auth.log | access.log | php_log | auto"),
+    source: str = Query("auto", description="auto | auth.log | access.log | php_log | fail2ban.log | error.log | phpfpm.log | kern.log | mail.log | dmesg"),
     year: int = Query(2026),
 ):
     """Recibe un archivo de log (o un .zip con varios) y los procesa.
@@ -1291,6 +1397,9 @@ def api_export_sqlite(
             "X-Export-Events": str(result["events"]),
             "X-Export-Alerts": str(result["alerts"]),
             "X-Export-SHA256": result["sha256"],
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
         },
     )
 

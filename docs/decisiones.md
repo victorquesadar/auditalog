@@ -121,3 +121,58 @@ exactamente el mismo dataset.
 **Motivo:** es la forma rigurosa de atribuir mejoras a la optimización y
 no a diferencias del dataset. El enunciado del S3 exige "con y sin
 optimización" explícitamente.
+
+## S4 — Semana 16
+
+### D-16 · GeoIP local, sin APIs HTTP
+**Elegida:** 2 capas en `src/common/geoip.py` — primero MMDB (MaxMind
+GeoLite2 o DB-IP Lite) cuando están descargadas, luego un fallback
+embebido en código con ~210 redes conocidas (AWS, Azure, GCP, DigitalOcean,
+OVH, Hetzner, Cloudflare, cloud chino, ICE/Cabletica de Costa Rica, etc.).
+**Alternativas:** ip-api.com, ipapi.co, ipgeolocation.io con request HTTP
+por IP.
+**Motivo:** el profesor fue explícito en que las APIs HTTP tienen límite
+de ratio y pueden fallar durante la defensa. Las bases MaxMind/DB-IP se
+distribuyen como archivo y se consultan offline en microsegundos.
+Mantenemos el fallback embebido para que el sistema funcione sin descargar
+nada (indispensable para la evaluación).
+
+### D-17 · Carga acumulativa, no reemplazo
+**Elegida:** `POST /api/upload` inserta en Mongo sin borrar lo previo;
+botón explícito "🗑️ Limpiar sistema" para resetear.
+**Alternativas:** cada upload limpia la BD primero.
+**Motivo:** el profesor aclaró que los archivos de log rotados (`.log.1`,
+`.log.2`, `.log.3`) son del mismo servidor en distintas fechas y hay que
+analizarlos **juntos** para detectar patrones. El botón de limpieza queda
+para repetir demos desde cero.
+
+### D-18 · Login opcional por variable de entorno
+**Elegida:** auth se activa solo si `AUTH_USER` y `AUTH_PASS` están en
+`.env`. Sesión por cookie HMAC-SHA256 firmada con `AUTH_SECRET`.
+**Alternativas:** OAuth2 con Google, JWT con refresh tokens, Keycloak.
+**Motivo:** el profesor pidió "lo más simple posible". Sin librerías
+adicionales (sin `python-jose`, sin `passlib`), usando solo `hmac`+`hashlib`
+de la stdlib. El modo sin login queda intacto para desarrollo local;
+Virtualmin solo necesita exportar las 3 variables. No mantenemos tabla
+de usuarios en Mongo — es un panel de administrador único, no multi-tenant.
+
+### D-19 · Enlaces externos como `<a>`, sin fetch backend
+**Elegida:** la página `/geo` muestra por cada IP enlaces estáticos a
+AbuseIPDB, Shodan, IPinfo y VirusTotal usando sus URLs públicas de
+búsqueda.
+**Alternativas:** scrapear esas páginas desde el backend y mostrar la
+reputación.
+**Motivo:** respeta el ToS de los servicios (no es scraping ni consumo de
+API gratuita masiva), es instantáneo, y el analista decide a cuál servicio
+consultar según el caso. No requiere registrar claves de API por grupo.
+
+### D-20 · Excel enriquecido con geo en las 3 hojas principales
+**Elegida:** las columnas País / Código / ASN / Proveedor se agregan a
+Alertas, Eventos y Top IPs. Las hojas "Por país" y "Por ASN" quedan como
+agrupadores con porcentajes.
+**Alternativas:** una sola hoja "Geo" dedicada, o hojas separadas por
+país.
+**Motivo:** el profesor pidió "reportes y gráficos agrupados por país y
+ASN, con porcentajes, ordenados descendente". Al tener la info en las
+hojas principales, el auditor filtra y pivota en Excel directamente;
+las hojas de resumen dan el ranking agregado para incluir en el informe.

@@ -93,6 +93,16 @@ def _serialize(doc: dict) -> dict:
                       (str(x) if isinstance(x, ObjectId) else x) for x in v]
         else:
             out[k] = v
+    # Enriquecer con GeoIP si tiene IP
+    ip = out.get("ip")
+    if not ip and isinstance(out.get("evidence"), dict):
+        ip = out["evidence"].get("ip")
+    if ip and isinstance(ip, str):
+        try:
+            from src.common.geoip import lookup_ip
+            out["geo"] = lookup_ip(ip)
+        except Exception:
+            pass
     return out
 
 
@@ -102,6 +112,7 @@ def _serialize(doc: dict) -> dict:
 
 @app.get("/api/health")
 def health():
+    from src.common.geoip import status as geoip_status
     status: dict[str, Any] = {"app": "ok", "version": app.version}
     try:
         get_mongo().admin.command("ping")
@@ -113,7 +124,138 @@ def health():
         status["redis"] = "ok"
     except Exception as e:
         status["redis"] = f"error: {e}"
+    status["geoip"] = geoip_status()
     return status
+
+
+# ----------------------------------------------------------------------------
+# GET /api/geoip/{ip} — resolver una IP a país + ASN (sin llamar a internet)
+# ----------------------------------------------------------------------------
+
+@app.get("/api/geoip/{ip}")
+def api_geoip(ip: str):
+    from src.common.geoip import lookup_ip
+    return lookup_ip(ip)
+
+
+# ----------------------------------------------------------------------------
+# POST /api/geoip/refresh — descarga DB-IP Lite desde el servidor y recarga
+# ----------------------------------------------------------------------------
+
+@app.post("/api/geoip/refresh")
+def api_geoip_refresh():
+    """Descarga DB-IP Lite MMDB (country + ASN) en el servidor y limpia el caché
+    del módulo geoip para que empiece a usar la base completa en el próximo request.
+
+    No requiere license key — DB-IP Lite es gratis sin registro.
+    Esta operación puede tardar 30-90 segundos (son unos ~20 MB).
+    """
+    import os as _os
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "download_geoip.py"
+    if not script.exists():
+        raise HTTPException(status_code=500, detail="scripts/download_geoip.py no existe")
+
+    # Cerrar los readers antes de descargar — en Windows maxminddb
+    # mapea el archivo con mmap y lo bloquea para escritura.
+    try:
+        from src.common import geoip as _geoip
+        _geoip.close_readers()
+    except Exception:
+        pass
+
+    try:
+        env = dict(_os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        proc = subprocess.run(
+            [_sys.executable, str(script)],
+            capture_output=True, text=True, timeout=180, cwd=str(root),
+            env=env, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="timeout descargando DB-IP Lite")
+
+    # Asegurar reset total después de la descarga
+    try:
+        from src.common import geoip as _geoip
+        _geoip.close_readers()
+    except Exception:
+        pass
+
+    return {
+        "ok": proc.returncode == 0,
+        "stdout": proc.stdout.strip().split("\n")[-20:],
+        "stderr": proc.stderr.strip().split("\n")[-5:] if proc.stderr else [],
+    }
+
+
+# ----------------------------------------------------------------------------
+# GET /api/geo-summary — alertas agrupadas por país y por ASN
+# ----------------------------------------------------------------------------
+
+@app.get("/api/geo-summary")
+def api_geo_summary(limit: int = Query(20, ge=1, le=100)):
+    """Agrupa las alertas por país y por ASN para el dashboard GeoIP.
+
+    Resuelve las IPs localmente (sin APIs HTTP) y devuelve los TOP N por volumen.
+    """
+    from src.common.geoip import lookup_ip
+    from collections import Counter
+
+    db = get_db()
+
+    by_country: Counter = Counter()
+    by_country_iso: dict[str, str] = {}
+    by_asn: Counter = Counter()
+    asn_org: dict = {}
+    ip_count: Counter = Counter()
+    ip_geo: dict = {}
+
+    total = 0
+    for alert in db.alerts.find({"evidence.ip": {"$exists": True, "$ne": None}}, {"evidence.ip": 1}):
+        ip = (alert.get("evidence") or {}).get("ip")
+        if not ip:
+            continue
+        info = lookup_ip(ip)
+        total += 1
+        by_country[info["country"]] += 1
+        by_country_iso[info["country"]] = info["country_iso"]
+        asn = info["asn"]
+        key_asn = f"AS{asn}" if asn else "AS?"
+        by_asn[key_asn] += 1
+        asn_org[key_asn] = info["organization"]
+        ip_count[ip] += 1
+        ip_geo[ip] = info
+
+    def _pct(n: int) -> float:
+        return round(n * 100 / total, 1) if total else 0.0
+
+    return {
+        "total_alerts_with_ip": total,
+        "by_country": [
+            {"country": c, "iso": by_country_iso[c], "count": n, "pct": _pct(n)}
+            for c, n in by_country.most_common(limit)
+        ],
+        "by_asn": [
+            {"asn": a, "organization": asn_org[a], "count": n, "pct": _pct(n)}
+            for a, n in by_asn.most_common(limit)
+        ],
+        "top_ips": [
+            {
+                "ip": ip,
+                "count": n,
+                "country_iso": ip_geo[ip]["country_iso"],
+                "country": ip_geo[ip]["country"],
+                "asn": ip_geo[ip]["asn"],
+                "organization": ip_geo[ip]["organization"],
+            }
+            for ip, n in ip_count.most_common(limit)
+        ],
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -332,6 +474,11 @@ def view_export(request: Request):
 @app.get("/subir", response_class=HTMLResponse)
 def view_upload(request: Request):
     return TEMPLATES.TemplateResponse(request, "subir.html")
+
+
+@app.get("/geo", response_class=HTMLResponse)
+def view_geo(request: Request):
+    return TEMPLATES.TemplateResponse(request, "geo.html")
 
 
 # ----------------------------------------------------------------------------
@@ -564,19 +711,31 @@ def api_export_xlsx(
 
     _autosize(ws, 3)
 
-    # -------- Hoja 3: Top IPs sospechosas (con chart de barras) --------
+    # -------- Hoja 3: Top IPs sospechosas (con chart y geo) --------
+    try:
+        from src.common.geoip import lookup_ip as _geolookup3
+    except Exception:
+        _geolookup3 = lambda ip: {"country_iso": "", "country": "", "asn": None, "organization": ""}
+
     ws = wb.create_sheet("Top IPs")
     ws["A1"] = "IPs con más alertas"
     ws["A1"].font = TITLE_FONT
-    ws.merge_cells("A1:D1")
+    ws.merge_cells("A1:G1")
 
-    _header_row(ws, 3, ["IP", "Alertas", "Reglas disparadas"])
+    _header_row(ws, 3, ["IP", "Alertas", "País", "Código", "ASN",
+                        "Proveedor / ISP", "Reglas disparadas"])
     for i, row in enumerate(top_ips, start=4):
-        ws.cell(row=i, column=1, value=row["_id"]).border = THIN_BORDER
+        ip = row["_id"]
+        geo = _geolookup3(ip) if ip else {}
+        ws.cell(row=i, column=1, value=ip).border = THIN_BORDER
         c = ws.cell(row=i, column=2, value=row["count"])
         c.border = THIN_BORDER
         c.font = Font(bold=True)
-        ws.cell(row=i, column=3, value=", ".join(sorted(row["rules"]))).border = THIN_BORDER
+        ws.cell(row=i, column=3, value=geo.get("country", "")).border = THIN_BORDER
+        ws.cell(row=i, column=4, value=geo.get("country_iso", "")).border = THIN_BORDER
+        ws.cell(row=i, column=5, value=f"AS{geo['asn']}" if geo.get("asn") else "").border = THIN_BORDER
+        ws.cell(row=i, column=6, value=geo.get("organization", "")).border = THIN_BORDER
+        ws.cell(row=i, column=7, value=", ".join(sorted(row["rules"]))).border = THIN_BORDER
 
     # Formato condicional + chart de las top 15
     if top_ips:
@@ -602,15 +761,113 @@ def api_export_xlsx(
         chart.set_categories(labels)
         chart.width = 18
         chart.height = max(10, top_n * 0.7)
-        ws.add_chart(chart, "E3")
+        ws.add_chart(chart, "I3")
 
-    _autosize(ws, 3, max_width=80)
+    _autosize(ws, 7, max_width=50)
 
-    # -------- Hoja 4: Alertas (lista completa) --------
+    # -------- Hoja extra: Agrupación por país / ASN (GeoIP) --------
+    try:
+        from src.common.geoip import lookup_ip
+        from collections import Counter
+
+        country_cnt: Counter = Counter()
+        country_iso: dict = {}
+        asn_cnt: Counter = Counter()
+        asn_org: dict = {}
+        total_ip = 0
+        for a in db.alerts.find({"evidence.ip": {"$exists": True, "$ne": None}}, {"evidence.ip": 1}):
+            ip = (a.get("evidence") or {}).get("ip")
+            if not ip:
+                continue
+            info = lookup_ip(ip)
+            total_ip += 1
+            country_cnt[info["country"]] += 1
+            country_iso[info["country"]] = info["country_iso"]
+            k_asn = f"AS{info['asn']}" if info["asn"] else "AS?"
+            asn_cnt[k_asn] += 1
+            asn_org[k_asn] = info["organization"]
+
+        if total_ip:
+            ws = wb.create_sheet("Por país")
+            ws["A1"] = "Ataques agrupados por país"
+            ws["A1"].font = TITLE_FONT
+            ws.merge_cells("A1:E1")
+            _header_row(ws, 3, ["#", "Código", "País", "Alertas", "% del total"])
+            for i, (c, n) in enumerate(country_cnt.most_common(50), start=4):
+                ws.cell(row=i, column=1, value=i-3)
+                ws.cell(row=i, column=2, value=country_iso[c])
+                ws.cell(row=i, column=3, value=c)
+                cv = ws.cell(row=i, column=4, value=n)
+                cv.font = Font(bold=True)
+                ws.cell(row=i, column=5, value=round(n*100/total_ip, 1))
+            # heatmap
+            last = 3 + len(country_cnt)
+            ws.conditional_formatting.add(
+                f"D4:D{last}",
+                ColorScaleRule(start_type="min", start_color="FEF3C7",
+                               end_type="max", end_color="DC2626"),
+            )
+            # chart
+            n_top = min(10, len(country_cnt))
+            chart = BarChart()
+            chart.type = "bar"
+            chart.style = 11
+            chart.title = f"Top {n_top} países por ataques"
+            labels = Reference(ws, min_col=3, min_row=4, max_row=3+n_top)
+            data = Reference(ws, min_col=4, min_row=3, max_row=3+n_top)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(labels)
+            chart.width = 18; chart.height = max(10, n_top*0.8)
+            ws.add_chart(chart, "G3")
+            _autosize(ws, 5)
+
+            ws = wb.create_sheet("Por ASN")
+            ws["A1"] = "Ataques agrupados por proveedor (ASN)"
+            ws["A1"].font = TITLE_FONT
+            ws.merge_cells("A1:E1")
+            _header_row(ws, 3, ["#", "ASN", "Organización", "Alertas", "% del total"])
+            for i, (a, n) in enumerate(asn_cnt.most_common(50), start=4):
+                ws.cell(row=i, column=1, value=i-3)
+                ws.cell(row=i, column=2, value=a)
+                ws.cell(row=i, column=3, value=asn_org[a])
+                cv = ws.cell(row=i, column=4, value=n)
+                cv.font = Font(bold=True)
+                ws.cell(row=i, column=5, value=round(n*100/total_ip, 1))
+            last = 3 + len(asn_cnt)
+            ws.conditional_formatting.add(
+                f"D4:D{last}",
+                ColorScaleRule(start_type="min", start_color="FEF3C7",
+                               end_type="max", end_color="DC2626"),
+            )
+            n_top = min(10, len(asn_cnt))
+            chart = BarChart()
+            chart.type = "bar"
+            chart.style = 11
+            chart.title = f"Top {n_top} proveedores (ASN)"
+            labels = Reference(ws, min_col=3, min_row=4, max_row=3+n_top)
+            data = Reference(ws, min_col=4, min_row=3, max_row=3+n_top)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(labels)
+            chart.width = 18; chart.height = max(10, n_top*0.8)
+            ws.add_chart(chart, "G3")
+            _autosize(ws, 5)
+    except Exception:
+        pass
+
+    # Cargamos el lookup localmente para enriquecer columnas de geo
+    try:
+        from src.common.geoip import lookup_ip as _geolookup
+    except Exception:
+        _geolookup = lambda ip: {"country_iso": "", "country": "", "asn": None, "organization": ""}
+
+    # -------- Hoja 4: Alertas (lista completa, con país y proveedor) --------
     ws = wb.create_sheet("Alertas")
-    _header_row(ws, 1, ["Hora", "Severidad", "Regla", "Título", "Estado", "IP", "Usuario"])
+    _header_row(ws, 1, ["Hora", "Severidad", "Regla", "Título", "Estado",
+                        "IP", "País", "Código", "ASN", "Proveedor / ISP", "Usuario"])
     for i, a in enumerate(db.alerts.find().sort("fired_at", -1).limit(10_000), start=2):
         ev = a.get("evidence") or {}
+        ip = ev.get("ip")
+        geo = _geolookup(ip) if ip else {}
         ws.cell(row=i, column=1, value=_iso(a.get("fired_at")))
         c_sev = ws.cell(row=i, column=2, value=a.get("severity"))
         if a.get("severity") in SEV_FILLS:
@@ -618,18 +875,25 @@ def api_export_xlsx(
         ws.cell(row=i, column=3, value=a.get("rule_id"))
         ws.cell(row=i, column=4, value=a.get("title"))
         ws.cell(row=i, column=5, value=a.get("status"))
-        ws.cell(row=i, column=6, value=ev.get("ip"))
-        ws.cell(row=i, column=7, value=ev.get("user"))
+        ws.cell(row=i, column=6, value=ip)
+        ws.cell(row=i, column=7, value=geo.get("country", "") if ip else "")
+        ws.cell(row=i, column=8, value=geo.get("country_iso", "") if ip else "")
+        ws.cell(row=i, column=9, value=(f"AS{geo['asn']}" if geo.get("asn") else "") if ip else "")
+        ws.cell(row=i, column=10, value=geo.get("organization", "") if ip else "")
+        ws.cell(row=i, column=11, value=ev.get("user"))
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:G{max(1, db.alerts.count_documents({}))+1}"
-    _autosize(ws, 7)
+    ws.auto_filter.ref = f"A1:K{max(1, db.alerts.count_documents({}))+1}"
+    _autosize(ws, 11, max_width=45)
 
-    # -------- Hoja 5: Eventos (opcional) --------
+    # -------- Hoja 5: Eventos (opcional, con país y proveedor) --------
     if include_events:
         ws = wb.create_sheet("Eventos")
-        _header_row(ws, 1, ["Hora", "Fuente", "Severidad", "Acción", "Usuario", "IP", "Host", "Raw"])
+        _header_row(ws, 1, ["Hora", "Fuente", "Severidad", "Acción", "Usuario",
+                            "IP", "País", "Código", "ASN", "Proveedor / ISP", "Host", "Raw"])
         n = 0
         for i, e in enumerate(db.events.find().sort("ts", -1).limit(events_limit), start=2):
+            ip = e.get("ip")
+            geo = _geolookup(ip) if ip else {}
             ws.cell(row=i, column=1, value=_iso(e.get("ts")))
             ws.cell(row=i, column=2, value=e.get("source"))
             c_sev = ws.cell(row=i, column=3, value=e.get("severity"))
@@ -637,15 +901,19 @@ def api_export_xlsx(
                 c_sev.fill = SEV_FILLS[e.get("severity")]
             ws.cell(row=i, column=4, value=e.get("action"))
             ws.cell(row=i, column=5, value=e.get("user"))
-            ws.cell(row=i, column=6, value=e.get("ip"))
-            ws.cell(row=i, column=7, value=e.get("host"))
+            ws.cell(row=i, column=6, value=ip)
+            ws.cell(row=i, column=7, value=geo.get("country", "") if ip else "")
+            ws.cell(row=i, column=8, value=geo.get("country_iso", "") if ip else "")
+            ws.cell(row=i, column=9, value=(f"AS{geo['asn']}" if geo.get("asn") else "") if ip else "")
+            ws.cell(row=i, column=10, value=geo.get("organization", "") if ip else "")
+            ws.cell(row=i, column=11, value=e.get("host"))
             raw = (e.get("raw") or "")
-            ws.cell(row=i, column=8, value=raw[:300])
+            ws.cell(row=i, column=12, value=raw[:300])
             n = i
         ws.freeze_panes = "A2"
         if n > 1:
-            ws.auto_filter.ref = f"A1:H{n}"
-        _autosize(ws, 8, max_width=80)
+            ws.auto_filter.ref = f"A1:L{n}"
+        _autosize(ws, 12, max_width=60)
 
     # Guardar a archivo temporal y devolver con FileResponse
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="auditalog_")
@@ -743,6 +1011,46 @@ def api_report():
             lines.append(f"| `{row['_id']}` | {row['count']} | {rules_s} |")
         lines.append("")
 
+    # Agrupación por país y por ASN (local GeoIP)
+    try:
+        from src.common.geoip import lookup_ip
+        from collections import Counter
+        country_cnt: Counter = Counter()
+        country_iso: dict = {}
+        asn_cnt: Counter = Counter()
+        asn_org: dict = {}
+        total_ip = 0
+        for alert in db.alerts.find({"evidence.ip": {"$exists": True, "$ne": None}}, {"evidence.ip": 1}):
+            ip = (alert.get("evidence") or {}).get("ip")
+            if not ip:
+                continue
+            info = lookup_ip(ip)
+            total_ip += 1
+            country_cnt[info["country"]] += 1
+            country_iso[info["country"]] = info["country_iso"]
+            k_asn = f"AS{info['asn']}" if info["asn"] else "AS?"
+            asn_cnt[k_asn] += 1
+            asn_org[k_asn] = info["organization"]
+
+        if total_ip:
+            lines.append("## Ataques agrupados por país")
+            lines.append("")
+            lines.append("| # | País | Alertas | % |")
+            lines.append("|---|---|---|---|")
+            for i, (c, n) in enumerate(country_cnt.most_common(10), start=1):
+                lines.append(f"| {i} | {country_iso[c]} · {c} | {n} | {round(n*100/total_ip,1)}% |")
+            lines.append("")
+
+            lines.append("## Ataques agrupados por proveedor (ASN)")
+            lines.append("")
+            lines.append("| # | ASN | Organización | Alertas | % |")
+            lines.append("|---|---|---|---|---|")
+            for i, (a, n) in enumerate(asn_cnt.most_common(10), start=1):
+                lines.append(f"| {i} | `{a}` | {asn_org[a]} | {n} | {round(n*100/total_ip,1)}% |")
+            lines.append("")
+    except Exception:
+        pass
+
     if recent_critical:
         lines.append("## Últimas alertas críticas")
         lines.append("")
@@ -769,40 +1077,37 @@ def api_report():
 # POST /api/upload — recibe archivo de log, lo parsea y lo ingiere
 # ----------------------------------------------------------------------------
 
-@app.post("/api/upload")
-async def api_upload(
-    file: UploadFile = File(...),
-    source: str = Query("auth.log", description="auth.log | access.log"),
-    year: int = Query(2026),
-):
-    """Recibe un archivo de log, lo parsea con el parser correspondiente,
-    lo mete línea por línea en Mongo y aplica reglas al toque.
-    """
+def _pick_parser(source: str):
     from src.common.parsers import parse_auth_log, parse_access_log, parse_php_log
-    from src.common.rules import apply_rules
-
     if source == "auth.log":
-        parser = parse_auth_log
+        return parse_auth_log, True
     elif source == "access.log":
-        parser = parse_access_log
+        return parse_access_log, False
     elif source == "php_log":
-        parser = parse_php_log
-    else:
-        raise HTTPException(status_code=400, detail=f"Fuente no soportada: {source}")
+        return parse_php_log, True
+    raise HTTPException(status_code=400, detail=f"Fuente no soportada: {source}")
 
-    db = get_db()
-    r = get_redis()
 
-    content = await file.read()
-    try:
-        text = content.decode("utf-8", errors="replace")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Archivo no es texto")
+def _guess_source(name: str) -> str:
+    """Heurística: detecta el formato por el nombre del archivo.
+    Útil para procesar varios archivos de un .zip sin que el usuario elija uno por uno.
+    """
+    low = name.lower()
+    if "access" in low:
+        return "access.log"
+    if "php" in low:
+        return "php_log"
+    return "auth.log"
+
+
+def _ingest_text(db, r, text: str, parser, parser_needs_year: bool,
+                 year: int, source: str) -> dict:
+    """Parsea un texto línea por línea, inserta eventos en Mongo y aplica reglas."""
+    from src.common.rules import apply_rules
 
     lines = text.splitlines()
     read = inserted = skipped = alerts_count = 0
     now = datetime.now(timezone.utc)
-
     batch: list[dict] = []
     BATCH = 500
 
@@ -811,10 +1116,7 @@ async def api_upload(
         if not line.strip():
             continue
         try:
-            if source in ("auth.log", "php_log"):
-                ev = parser(line, default_year=year)
-            else:
-                ev = parser(line)
+            ev = parser(line, default_year=year) if parser_needs_year else parser(line)
         except Exception:
             skipped += 1
             continue
@@ -823,29 +1125,129 @@ async def api_upload(
             continue
         ev["ingested_at"] = now
         batch.append(ev)
-
         if len(batch) >= BATCH:
             res = db.events.insert_many(batch, ordered=False)
-            # Aplicar reglas por cada evento
             for ev2, oid in zip(batch, res.inserted_ids):
                 alerts_count += len(apply_rules(r, db, ev2, oid))
             inserted += len(batch)
             batch = []
-
     if batch:
         res = db.events.insert_many(batch, ordered=False)
         for ev2, oid in zip(batch, res.inserted_ids):
             alerts_count += len(apply_rules(r, db, ev2, oid))
         inserted += len(batch)
 
-    return {
-        "filename": file.filename,
-        "source": source,
-        "read": read,
-        "inserted": inserted,
-        "skipped": skipped,
-        "alerts_fired": alerts_count,
-    }
+    return {"source": source, "read": read, "inserted": inserted,
+            "skipped": skipped, "alerts_fired": alerts_count}
+
+
+@app.post("/api/upload")
+async def api_upload(
+    file: UploadFile = File(...),
+    source: str = Query("auth.log", description="auth.log | access.log | php_log | auto"),
+    year: int = Query(2026),
+):
+    """Recibe un archivo de log (o un .zip con varios) y los procesa.
+
+    - Si el archivo es .zip, extrae en memoria y procesa **cada archivo interno**.
+      Si source=auto, adivina el formato por el nombre.
+    - Si es un archivo plano, usa el `source` indicado.
+    - **No borra los datos previos**: es carga acumulativa (el reset se hace manual).
+    """
+    import gzip
+    import io
+    import zipfile
+
+    db = get_db()
+    r = get_redis()
+    content = await file.read()
+    filename = (file.filename or "upload.log").lower()
+
+    def _decompress_if_needed(name: str, raw: bytes) -> bytes:
+        """Si el archivo está gzipeado (termina en .gz o empieza con el magic de gzip),
+        lo descomprime. Devuelve los bytes planos."""
+        low = name.lower()
+        if low.endswith(".gz") or raw[:2] == b"\x1f\x8b":
+            try:
+                return gzip.decompress(raw)
+            except Exception:
+                return raw  # fallback: devolver lo que había
+        return raw
+
+    def _strip_gz_suffix(name: str) -> str:
+        """auth.log.2.gz → auth.log.2 (para que _guess_source funcione)."""
+        return name[:-3] if name.lower().endswith(".gz") else name
+
+    # Si es ZIP, procesar cada archivo interno
+    if filename.endswith(".zip"):
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(content))
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="El .zip está dañado o no es válido")
+
+        files_processed: list[dict] = []
+        totals = {"read": 0, "inserted": 0, "skipped": 0, "alerts_fired": 0}
+
+        for name in zf.namelist():
+            # Saltar directorios y metadatos macOS/Windows
+            if name.endswith("/") or name.startswith("__MACOSX/") or "/.DS_Store" in name or name.endswith(".DS_Store"):
+                continue
+            raw = zf.read(name)
+            if len(raw) == 0:
+                files_processed.append({"name": name, "error": "archivo vacío",
+                                        "source": None, "read": 0, "inserted": 0,
+                                        "skipped": 0, "alerts_fired": 0})
+                continue
+
+            # Descomprimir si es .gz dentro del zip (caso típico de /var/log rotados)
+            raw = _decompress_if_needed(name, raw)
+            logical_name = _strip_gz_suffix(name)
+
+            try:
+                text = raw.decode("utf-8", errors="replace")
+            except Exception:
+                files_processed.append({"name": name, "error": "no es texto",
+                                        "source": None, "read": 0, "inserted": 0,
+                                        "skipped": 0, "alerts_fired": 0})
+                continue
+
+            effective_source = _guess_source(logical_name) if source == "auto" else source
+            try:
+                parser, needs_year = _pick_parser(effective_source)
+            except HTTPException as e:
+                files_processed.append({"name": name, "error": str(e.detail),
+                                        "source": effective_source, "read": 0, "inserted": 0,
+                                        "skipped": 0, "alerts_fired": 0})
+                continue
+
+            res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+            res["name"] = name
+            files_processed.append(res)
+            for k in totals:
+                totals[k] += res[k]
+
+        return {
+            "zip": True,
+            "filename": file.filename,
+            "files_count": len(files_processed),
+            "files": files_processed,
+            "totals": totals,
+        }
+
+    # Archivo plano (puede venir gzipeado si el usuario sube .log.1.gz directo)
+    raw = _decompress_if_needed(filename, content)
+    logical_name = _strip_gz_suffix(filename)
+    effective_source = _guess_source(logical_name) if source == "auto" else source
+    parser, needs_year = _pick_parser(effective_source)
+    try:
+        text = raw.decode("utf-8", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Archivo no es texto")
+
+    res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+    res["zip"] = False
+    res["filename"] = file.filename
+    return res
 
 
 # ----------------------------------------------------------------------------

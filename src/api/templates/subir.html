@@ -10,20 +10,22 @@
     </button>
 </div>
 <p class="muted" style="max-width:720px;">
-Subí un archivo de log del servidor que querés auditar. El sistema parsea
-cada línea con el parser correspondiente, mete los eventos en MongoDB y
-aplica las reglas de detección en tiempo real.
+Subí un archivo de log del servidor que querés auditar — o un <b>.zip con varios</b>
+para análisis acumulado. El sistema parsea cada línea, mete los eventos en MongoDB
+y aplica las reglas en tiempo real. <b>La carga es acumulativa</b>: no borra los
+datos anteriores (usá el botón "Limpiar" si querés empezar de cero).
 </p>
 <div id="reset-result" class="result" style="max-width:720px;"></div>
 
 <section class="card" style="max-width:720px; margin-bottom:1.5rem;">
     <form id="upload-form">
         <div class="form-grid">
-            <label class="full">Archivo (.log, .log.N, .txt — máx. 50 MB)
+            <label class="full">Archivo (.log, .log.N, .txt, .gz o .zip con varios — máx. 50 MB)
                 <input type="file" name="file" id="file-input" required>
             </label>
             <label>Formato del log*
                 <select name="source" required>
+                    <option value="auto">auto (detectar por nombre — recomendado para .zip)</option>
                     <option value="auth.log">auth.log (SSH / Linux)</option>
                     <option value="access.log">access.log (Apache / Nginx)</option>
                     <option value="php_log">php_log (PHP error log)</option>
@@ -140,14 +142,31 @@ form.addEventListener('submit', (e) => {
             const d = JSON.parse(xhr.responseText);
             progressText.textContent = `✅ Procesado`;
             result.className = 'result ok';
-            result.innerHTML = `
-                <b>✅ Procesado</b><br>
-                • Archivo: <code>${d.filename}</code> (${d.source})<br>
-                • Líneas leídas: <b>${d.read.toLocaleString()}</b><br>
-                • Eventos insertados: <b>${d.inserted.toLocaleString()}</b><br>
-                • Líneas descartadas (formato no reconocido): <b>${d.skipped.toLocaleString()}</b><br>
-                • Alertas disparadas: <b>${d.alerts_fired.toLocaleString()}</b><br>
-                <a href="/eventos">Ver /eventos →</a> · <a href="/alertas">Ver /alertas →</a>`;
+            if (d.zip) {
+                const t = d.totals;
+                const perFile = d.files.map(f => {
+                    if (f.error) return `  • <code>${f.name}</code> → <span style="color:var(--critical)">${f.error}</span>`;
+                    return `  • <code>${f.name}</code> (${f.source}) → ${f.inserted.toLocaleString()} eventos, ${f.alerts_fired} alertas`;
+                }).join('<br>');
+                result.innerHTML = `
+                    <b>✅ ZIP procesado</b><br>
+                    • Archivo: <code>${d.filename}</code> (${d.files_count} archivos internos)<br>
+                    • <b>Total líneas leídas:</b> ${t.read.toLocaleString()}<br>
+                    • <b>Total eventos insertados:</b> ${t.inserted.toLocaleString()}<br>
+                    • <b>Total descartadas:</b> ${t.skipped.toLocaleString()}<br>
+                    • <b>Total alertas disparadas:</b> ${t.alerts_fired.toLocaleString()}<br>
+                    <br><b>Detalle por archivo:</b><br>${perFile}<br>
+                    <a href="/eventos">Ver /eventos →</a> · <a href="/alertas">Ver /alertas →</a> · <a href="/geo">Ver origen →</a>`;
+            } else {
+                result.innerHTML = `
+                    <b>✅ Procesado</b><br>
+                    • Archivo: <code>${d.filename}</code> (${d.source})<br>
+                    • Líneas leídas: <b>${d.read.toLocaleString()}</b><br>
+                    • Eventos insertados: <b>${d.inserted.toLocaleString()}</b><br>
+                    • Líneas descartadas (formato no reconocido): <b>${d.skipped.toLocaleString()}</b><br>
+                    • Alertas disparadas: <b>${d.alerts_fired.toLocaleString()}</b><br>
+                    <a href="/eventos">Ver /eventos →</a> · <a href="/alertas">Ver /alertas →</a> · <a href="/geo">Ver origen →</a>`;
+            }
         } else {
             result.className = 'result err';
             try {

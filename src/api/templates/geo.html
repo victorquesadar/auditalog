@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Origen de ataques · AuditaLog{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Origen de los ataques</h1>
+    <div class="page-header-right">
+        <button type="button" class="btn-secondary" id="btn-refresh" onclick="load()">↻ Actualizar</button>
+        <button type="button" class="btn-primary" id="btn-enrich"
+                title="Descarga DB-IP Lite (~20 MB, gratis, sin registro) y resuelve todas las IPs">
+            🔍 Descubrir IPs desconocidas
+        </button>
+    </div>
+</div>
+
+<p class="muted" style="max-width:900px;">
+    Las IPs se resuelven <b>localmente</b> a país y proveedor de servicios (ASN) —
+    sin llamadas HTTP a servicios externos, así evitamos rate limits.
+    Por defecto usamos un dataset embebido de ~180 redes conocidas
+    (clouds, scanners, ISPs frecuentes). Si muchas IPs aparecen como
+    "Desconocidas", <b>descargá la base completa</b> con el botón
+    <b>"🔍 Descubrir IPs desconocidas"</b> — tarda 30-90 s y cubre el mundo entero.
+</p>
+
+<div id="enrich-result" class="result" style="max-width:900px;"></div>
+
+<section class="charts">
+    <div class="card">
+        <h2>Ataques por país</h2>
+        <canvas id="chart-country" height="220"></canvas>
+    </div>
+    <div class="card">
+        <h2>Ataques por proveedor (ASN)</h2>
+        <canvas id="chart-asn" height="220"></canvas>
+    </div>
+</section>
+
+<section style="margin-top:2rem;">
+    <h2>Detalle por país</h2>
+    <table class="data">
+        <thead>
+            <tr><th>#</th><th>País</th><th>Alertas</th><th>% del total</th></tr>
+        </thead>
+        <tbody id="rows-country"><tr><td colspan="4">cargando…</td></tr></tbody>
+    </table>
+</section>
+
+<section style="margin-top:2rem;">
+    <h2>Detalle por proveedor / ASN</h2>
+    <table class="data">
+        <thead>
+            <tr><th>#</th><th>ASN</th><th>Organización</th><th>Alertas</th><th>% del total</th></tr>
+        </thead>
+        <tbody id="rows-asn"><tr><td colspan="5">cargando…</td></tr></tbody>
+    </table>
+</section>
+
+<section style="margin-top:2rem;">
+    <h2>Top IPs sospechosas — con rastreo externo</h2>
+    <p class="muted">
+        Click en los íconos para consultar la IP en servicios públicos (abre en pestaña nueva).
+    </p>
+    <table class="data">
+        <thead>
+            <tr>
+                <th>#</th><th>IP</th><th>País</th><th>ASN / Organización</th>
+                <th>Alertas</th><th>Verificar en…</th>
+            </tr>
+        </thead>
+        <tbody id="rows-ips"><tr><td colspan="6">cargando…</td></tr></tbody>
+    </table>
+</section>
+
+<script>
+// --- Botón: descubrir IPs desconocidas (descarga DB-IP Lite) ---
+document.getElementById('btn-enrich').addEventListener('click', async () => {
+    if (!confirm('Descargar DB-IP Lite (~20 MB, gratis, sin registro)?\n\nEsto puede tardar 30-90 segundos. Al terminar, todas las IPs se resuelven con cobertura completa.')) return;
+    const btn = document.getElementById('btn-enrich');
+    const res = document.getElementById('enrich-result');
+    btn.disabled = true;
+    btn.textContent = '⏳ Descargando DB-IP Lite...';
+    res.className = 'result';
+    res.textContent = 'Descargando bases de datos locales (país + ASN)...';
+    try {
+        const r = await fetch('/api/geoip/refresh', { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) {
+            res.className = 'result ok';
+            res.innerHTML = `✅ <b>Bases de datos descargadas.</b> Todas las IPs se resuelven con cobertura completa ahora.<br><a href="/geo">Refrescar la página</a> para verlo.`;
+            setTimeout(() => load(), 500);
+        } else {
+            res.className = 'result err';
+            res.innerHTML = `❌ No se pudo descargar.<br><pre style="font-size:.75rem;">${d.stdout.concat(d.stderr).join('\\n')}</pre>` +
+                            `<br>Alternativa: desde terminal correr <code>python scripts/download_geoip.py</code>`;
+        }
+    } catch (e) {
+        res.className = 'result err';
+        res.textContent = 'Error: ' + e;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔍 Descubrir IPs desconocidas';
+    }
+});
+
+let chartCountry, chartAsn;
+
+const PALETTE = [
+    "#dc2626", "#ea580c", "#d97706", "#059669", "#0284c7",
+    "#7c3aed", "#db2777", "#4b5563", "#65a30d", "#0891b2",
+];
+
+function emojiCountry(iso) {
+    if (!iso || iso === "--") return "🌐";
+    if (iso.length !== 2) return "🌐";
+    try {
+        const A = 0x1F1E6, a = 0x41;
+        return String.fromCodePoint(iso.charCodeAt(0) - a + A) + String.fromCodePoint(iso.charCodeAt(1) - a + A);
+    } catch { return "🌐"; }
+}
+
+async function load() {
+    const r = await fetch('/api/geo-summary?limit=20');
+    const d = await r.json();
+
+    // --- Charts ---
+    const countryLabels = d.by_country.map(x => emojiCountry(x.iso) + ' ' + x.country);
+    const countryData = d.by_country.map(x => x.count);
+
+    if (chartCountry) chartCountry.destroy();
+    chartCountry = new Chart(document.getElementById('chart-country'), {
+        type: 'doughnut',
+        data: { labels: countryLabels,
+                datasets: [{ data: countryData, backgroundColor: PALETTE }] },
+        options: { plugins: { legend: { position: 'right' } } },
+    });
+
+    const asnLabels = d.by_asn.map(x => (x.asn || '?') + ' · ' + (x.organization || 'Desconocido').substring(0, 30));
+    const asnData = d.by_asn.map(x => x.count);
+
+    if (chartAsn) chartAsn.destroy();
+    chartAsn = new Chart(document.getElementById('chart-asn'), {
+        type: 'bar',
+        data: { labels: asnLabels,
+                datasets: [{ label: 'Alertas', data: asnData, backgroundColor: '#dc2626' }] },
+        options: { indexAxis: 'y', plugins: { legend: { display: false } } },
+    });
+
+    // --- Tabla por país ---
+    const tbc = document.getElementById('rows-country');
+    if (!d.by_country.length) {
+        tbc.innerHTML = '<tr><td colspan="4" class="muted">Sin alertas con IP</td></tr>';
+    } else {
+        tbc.innerHTML = d.by_country.map((x, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td>${emojiCountry(x.iso)} ${x.country}</td>
+                <td><b>${x.count}</b></td>
+                <td>${x.pct}%</td>
+            </tr>`).join('');
+    }
+
+    // --- Tabla por ASN ---
+    const tba = document.getElementById('rows-asn');
+    if (!d.by_asn.length) {
+        tba.innerHTML = '<tr><td colspan="5" class="muted">Sin alertas con IP</td></tr>';
+    } else {
+        tba.innerHTML = d.by_asn.map((x, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td><code>${x.asn}</code></td>
+                <td>${x.organization}</td>
+                <td><b>${x.count}</b></td>
+                <td>${x.pct}%</td>
+            </tr>`).join('');
+    }
+
+    // --- Tabla top IPs ---
+    const tbi = document.getElementById('rows-ips');
+    if (!d.top_ips.length) {
+        tbi.innerHTML = '<tr><td colspan="6" class="muted">Sin IPs</td></tr>';
+    } else {
+        tbi.innerHTML = d.top_ips.map((x, i) => {
+            const ip = x.ip;
+            const links = [
+                `<a href="https://www.abuseipdb.com/check/${ip}" target="_blank" rel="noopener" title="AbuseIPDB">🛡️ AbuseIPDB</a>`,
+                `<a href="https://www.shodan.io/host/${ip}" target="_blank" rel="noopener" title="Shodan">🔎 Shodan</a>`,
+                `<a href="https://ipinfo.io/${ip}" target="_blank" rel="noopener" title="IPinfo">ℹ️ IPinfo</a>`,
+                `<a href="https://www.virustotal.com/gui/ip-address/${ip}" target="_blank" rel="noopener" title="VirusTotal">🧪 VT</a>`,
+            ].join(' · ');
+            return `
+                <tr>
+                    <td>${i+1}</td>
+                    <td><code>${ip}</code></td>
+                    <td>${emojiCountry(x.country_iso)} ${x.country}</td>
+                    <td>${x.asn ? 'AS'+x.asn+' · ' : ''}${x.organization}</td>
+                    <td><b>${x.count}</b></td>
+                    <td class="small">${links}</td>
+                </tr>`;
+        }).join('');
+    }
+}
+
+load();
+</script>
+{% endblock %}

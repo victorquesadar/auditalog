@@ -156,6 +156,105 @@ def test_upload_view_renders(client):
     assert "Subir log" in r.text or "upload-form" in r.text
 
 
+def test_upload_endpoint_zip(client):
+    """Subir un .zip con 2 archivos de log y verificar que procesa ambos."""
+    import io
+    import zipfile
+
+    auth_content = (
+        b"Oct 15 14:30:00 vps-01 sshd[1]: Failed password for root from 203.0.113.9 port 40000 ssh2\n"
+        b"Oct 15 14:30:03 vps-01 sshd[2]: Failed password for root from 203.0.113.9 port 40001 ssh2\n"
+        b"Oct 15 14:30:06 vps-01 sshd[3]: Failed password for root from 203.0.113.9 port 40002 ssh2\n"
+        b"Oct 15 14:30:09 vps-01 sshd[4]: Failed password for root from 203.0.113.9 port 40003 ssh2\n"
+        b"Oct 15 14:30:12 vps-01 sshd[5]: Failed password for root from 203.0.113.9 port 40004 ssh2\n"
+    )
+    access_content = b'1.2.3.4 - - [10/Oct/2026:13:55:36 +0000] "GET /wp-admin HTTP/1.1" 401 123\n'
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("auth.log.1", auth_content)
+        z.writestr("access.log", access_content)
+    buf.seek(0)
+
+    files = {"file": ("logs.zip", buf.read(), "application/zip")}
+    r = client.post("/api/upload?source=auto&year=2026", files=files)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["zip"] is True
+    assert d["files_count"] == 2
+    assert d["totals"]["inserted"] >= 5  # al menos los 5 auth
+    assert d["totals"]["alerts_fired"] >= 1  # bruteforce
+
+
+def test_upload_zip_with_gzipped_files_inside(client):
+    """Subir un .zip que contiene archivos .gz adentro (caso típico de /var/log rotados)."""
+    import gzip
+    import io
+    import zipfile
+
+    auth_content = (
+        b"Oct 15 15:00:00 vps-01 sshd[1]: Failed password for root from 198.51.100.7 port 40000 ssh2\n"
+        b"Oct 15 15:00:03 vps-01 sshd[2]: Failed password for root from 198.51.100.7 port 40001 ssh2\n"
+        b"Oct 15 15:00:06 vps-01 sshd[3]: Failed password for root from 198.51.100.7 port 40002 ssh2\n"
+        b"Oct 15 15:00:09 vps-01 sshd[4]: Failed password for root from 198.51.100.7 port 40003 ssh2\n"
+        b"Oct 15 15:00:12 vps-01 sshd[5]: Failed password for root from 198.51.100.7 port 40004 ssh2\n"
+    )
+    gz_bytes = gzip.compress(auth_content)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("auth.log.1.gz", gz_bytes)
+    buf.seek(0)
+
+    files = {"file": ("logs.zip", buf.read(), "application/zip")}
+    r = client.post("/api/upload?source=auto&year=2026", files=files)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["zip"] is True
+    assert d["totals"]["inserted"] == 5, f"esperaba 5 insertados, tuvo {d['totals']}"
+    assert d["totals"]["alerts_fired"] >= 1
+
+
+def test_upload_gz_file_directly(client):
+    """Subir un archivo .gz directo (no en zip)."""
+    import gzip
+
+    auth_content = b"Oct 15 16:00:00 vps-01 sshd[1]: Failed password for admin from 1.2.3.4 port 1 ssh2\n"
+    gz_bytes = gzip.compress(auth_content)
+
+    files = {"file": ("auth.log.3.gz", gz_bytes, "application/gzip")}
+    r = client.post("/api/upload?source=auto&year=2026", files=files)
+    assert r.status_code == 200
+    d = r.json()
+    assert d["zip"] is False
+    assert d["inserted"] == 1
+
+
+def test_geoip_endpoint(client):
+    r = client.get("/api/geoip/152.42.130.61")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["country_iso"] == "US"
+    assert "DigitalOcean" in d["organization"]
+
+
+def test_geo_view_renders(client):
+    r = client.get("/geo")
+    assert r.status_code == 200
+    assert "Origen" in r.text or "chart-country" in r.text
+
+
+def test_geo_summary_endpoint_empty(client):
+    """Sin alertas con IP, geo-summary devuelve listas vacías pero no falla."""
+    # El fixture ya insertó 1 alerta con ip 1.2.3.4
+    r = client.get("/api/geo-summary")
+    assert r.status_code == 200
+    d = r.json()
+    assert "by_country" in d
+    assert "by_asn" in d
+    assert "top_ips" in d
+
+
 def test_html_pages_render(client):
     for path in ("/", "/eventos", "/alertas"):
         r = client.get(path)

@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -120,16 +121,49 @@ def get_db():
 
 
 def get_redis() -> redis.Redis:
+    """Devuelve el cliente Redis. En entornos sin Redis real (CI, desarrollo
+    sin daemon), si la variable `AUDITALOG_USE_FAKEREDIS=1` está exportada
+    o `fakeredis` está instalado y Redis no responde al ping inicial, cae
+    a `fakeredis.FakeRedis()` para que la app y los tests sigan funcionando.
+    """
     global _redis
-    if _redis is None:
-        _redis = redis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            db=settings.redis_db,
-            decode_responses=True,
-        )
-    return _redis
+    if _redis is not None:
+        return _redis
+
+    use_fake = os.getenv("AUDITALOG_USE_FAKEREDIS", "").lower() in ("1", "true", "yes")
+    if not use_fake:
+        try:
+            client = redis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                password=settings.redis_password,
+                db=settings.redis_db,
+                decode_responses=True,
+                socket_connect_timeout=1,
+            )
+            client.ping()
+            _redis = client
+            return _redis
+        except Exception:
+            use_fake = True
+
+    if use_fake:
+        try:
+            import fakeredis
+            _redis = fakeredis.FakeRedis(decode_responses=True)
+            return _redis
+        except ImportError:
+            # fakeredis no instalado: devolvemos el cliente real igual, que
+            # explotará con ConnectionError en la primera operación — el
+            # llamador decide cómo tratarlo.
+            _redis = redis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                password=settings.redis_password,
+                db=settings.redis_db,
+                decode_responses=True,
+            )
+            return _redis
 
 
 # ----------------------------------------------------------------------------
@@ -1326,7 +1360,18 @@ async def api_upload(
                                         "skipped": 0, "alerts_fired": 0})
                 continue
 
-            res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+            try:
+                res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+            except Exception as e:
+                import traceback
+                print(f"[UPLOAD/ZIP ERROR] file={name} source={effective_source}\n"
+                      f"{traceback.format_exc()}", flush=True)
+                files_processed.append({"name": name,
+                                        "error": f"{type(e).__name__}: {e}",
+                                        "source": effective_source,
+                                        "read": 0, "inserted": 0,
+                                        "skipped": 0, "alerts_fired": 0})
+                continue
             res["name"] = name
             files_processed.append(res)
             for k in totals:
@@ -1350,7 +1395,22 @@ async def api_upload(
     except Exception:
         raise HTTPException(status_code=400, detail="Archivo no es texto")
 
-    res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+    # Capturamos CUALQUIER excepción del pipeline y la devolvemos con
+    # traceback, en vez de dejar que el cliente vea un 500 genérico. Esto
+    # cubre errores de Mongo (write concern, índice duplicado), bloqueo
+    # de MMDB en Windows, codificación, y bugs nuevos de reglas.
+    try:
+        res = _ingest_text(db, r, text, parser, needs_year, year, effective_source)
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[UPLOAD ERROR] source={effective_source} file={filename}\n{tb}",
+              flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error procesando {filename!s}: {type(e).__name__}: {e}. "
+                   f"Ver traceback en la terminal de uvicorn."
+        )
     res["zip"] = False
     res["filename"] = file.filename
     return res

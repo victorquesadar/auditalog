@@ -9,12 +9,15 @@ el worker:
 """
 from __future__ import annotations
 
+import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import mongomock
+import pytest
 import redis as redis_lib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +26,20 @@ sys.path.insert(0, str(ROOT))
 from src.common.config import settings  # noqa: E402
 
 
+def _real_redis_available() -> bool:
+    try:
+        with socket.create_connection(("localhost", 6379), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(
+    not _real_redis_available(),
+    reason="Test de integración: requiere un Redis REAL escuchando en "
+           "localhost:6379, porque lanza un subprocess que no ve el "
+           "monkeypatch de fakeredis del conftest."
+)
 def test_full_flow():
     # Limpieza previa en Redis
     r = redis_lib.Redis(decode_responses=True)

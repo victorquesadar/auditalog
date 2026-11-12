@@ -459,6 +459,66 @@ def rule_apparmor_denied(event: dict, mongo_event_id) -> Optional[dict]:
     }
 
 
+# Fuentes del S4 para las que la regla genérica dispara en severidad "warn".
+# Son los formatos nuevos cuyos eventos interesantes NO son matcheados por
+# ninguna regla específica (ej. fail2ban "Found", apparmor warnings, php-fpm
+# child killed, mail dovecot restarted, apache notice, etc.).
+_S4_SOURCES = {
+    "fail2ban.log", "error.log", "phpfpm.log",
+    "kern.log", "mail.log", "dmesg",
+}
+
+
+def rule_serious_event_generic(r: redis.Redis, event: dict,
+                               mongo_event_id) -> Optional[dict]:
+    """Regla fallback: dispara cuando llega un evento serio de una fuente del S4.
+
+    - severity "critical" → siempre dispara
+    - severity "warn" + source de S4 → dispara
+    - severity "info" → nunca dispara
+
+    Para evitar inundar la UI, hace deduplicación por (source, action) con
+    ventana de 60s en Redis: la misma combinación no vuelve a disparar
+    alerta en ese minuto.
+    """
+    sev = event.get("severity")
+    src = event.get("source", "")
+    if sev == "critical":
+        pass  # siempre pasa
+    elif sev == "warn" and src in _S4_SOURCES:
+        pass  # pasa para fuentes del S4
+    else:
+        return None
+
+    action = event.get("action", "unknown")
+    dedup_key = key(f"alert:dedup:{src}:{action}")
+    try:
+        # SET NX EX = atomic set-if-not-exists con expiración
+        if not r.set(dedup_key, "1", nx=True, ex=60):
+            return None  # ya se alertó esta combinación hace menos de 60s
+    except Exception:
+        pass  # si Redis falla, igual disparamos
+
+    detail = event.get("detail") or {}
+    msg = detail.get("message") or detail.get("jail") or action
+    title = f"Evento {sev} en {src}: {str(msg)[:80]}"
+    return {
+        "rule_id": "serious_event_v1",
+        "fired_at": datetime.now(timezone.utc),
+        "severity": sev,
+        "title": title,
+        "evidence": {
+            "source": src,
+            "action": action,
+            "ip": event.get("ip"),
+            "host": event.get("host"),
+            "detail": detail,
+            "event_ids": [mongo_event_id],
+        },
+        "status": "open",
+    }
+
+
 def apply_rules(r: redis.Redis, db: Database, event: dict, mongo_event_id) -> list[dict]:
     """Corre todas las reglas sobre un evento y guarda las alertas que disparen."""
     alerts_fired: list[dict] = []
@@ -478,6 +538,7 @@ def apply_rules(r: redis.Redis, db: Database, event: dict, mongo_event_id) -> li
         ("f2b_ban",           lambda: rule_fail2ban_ban(event, mongo_event_id)),
         ("apache_denied",     lambda: rule_apache_client_denied(event, mongo_event_id)),
         ("apparmor_denied",   lambda: rule_apparmor_denied(event, mongo_event_id)),
+        ("serious_event",     lambda: rule_serious_event_generic(r, event, mongo_event_id)),
     ):
         try:
             alert = fn()

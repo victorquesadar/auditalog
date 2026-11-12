@@ -32,9 +32,19 @@ except ImportError:
     _HAS_MAXMIND = False
 
 
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "geoip"
+# El directorio de MMDBs se puede sobreescribir con la variable de entorno
+# AUDITALOG_GEOIP_DIR — útil en tests para forzar el uso del dataset
+# embebido apuntando a una carpeta que no existe.
+import os as _os
+_DATA_DIR = Path(
+    _os.getenv("AUDITALOG_GEOIP_DIR")
+    or str(Path(__file__).resolve().parents[2] / "data" / "geoip")
+)
 _COUNTRY_MMDB = _DATA_DIR / "GeoLite2-Country.mmdb"
 _ASN_MMDB = _DATA_DIR / "GeoLite2-ASN.mmdb"
+# También aceptamos los nombres de DB-IP Lite (la alternativa gratis)
+_COUNTRY_MMDB_DBIP = _DATA_DIR / "dbip-country-lite.mmdb"
+_ASN_MMDB_DBIP = _DATA_DIR / "dbip-asn-lite.mmdb"
 
 _country_reader = None
 _asn_reader = None
@@ -45,16 +55,24 @@ def _load_mmdb():
     global _country_reader, _asn_reader
     if not _HAS_MAXMIND:
         return
-    if _country_reader is None and _COUNTRY_MMDB.exists():
-        try:
-            _country_reader = maxminddb.open_database(str(_COUNTRY_MMDB))
-        except Exception:
-            _country_reader = None
-    if _asn_reader is None and _ASN_MMDB.exists():
-        try:
-            _asn_reader = maxminddb.open_database(str(_ASN_MMDB))
-        except Exception:
-            _asn_reader = None
+    # País: primero MaxMind GeoLite2, si no hay prueba DB-IP Lite
+    if _country_reader is None:
+        for candidate in (_COUNTRY_MMDB, _COUNTRY_MMDB_DBIP):
+            if candidate.exists():
+                try:
+                    _country_reader = maxminddb.open_database(str(candidate))
+                    break
+                except Exception:
+                    _country_reader = None
+    # ASN: idem
+    if _asn_reader is None:
+        for candidate in (_ASN_MMDB, _ASN_MMDB_DBIP):
+            if candidate.exists():
+                try:
+                    _asn_reader = maxminddb.open_database(str(candidate))
+                    break
+                except Exception:
+                    _asn_reader = None
 
 
 # ----------------------------------------------------------------------------

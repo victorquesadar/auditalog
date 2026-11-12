@@ -1,0 +1,46 @@
+# Entregable #10 del curso — ficha del grupo para el portal
+grupo: 4
+dia: viernes
+periodo: II-2026
+curso: Tópicos Avanzados de Bases de Datos
+universidad: Universidad Nacional (UNA)
+
+proyecto:
+  nombre: AuditaLog
+  resumen: >
+    Bitácora de auditoría de accesos y cambios de configuración para PYMEs
+    e instituciones pequeñas. Centraliza logs de Linux/SSH, Apache/Nginx,
+    fail2ban, PHP-FPM, kernel y mail; aplica reglas de detección
+    (fuerza bruta, intentos fuera de horario, inyecciones, IPs baneadas
+    por fail2ban, denegaciones de AppArmor, errores PHP críticos); muestra
+    el tablero web; y exporta un paquete de evidencia firmado (SQLite).
+  perfil: C
+  lenguaje: Python 3.11
+  motores:
+    - SQLite    # paquete de entrega firmado (evidencia reproducible)
+    - Redis     # contadores y estado caliente para reglas de correlación
+    - MongoDB   # almacén principal de eventos y alertas
+
+repositorio:
+  url: https://github.com/victorquesadar/auditalog
+  rama_principal: main
+  tag_release: v1.0.0
+
+# Sólo quienes autorizaron explícitamente que su nombre figure en el portal
+autores_publicos: []
+
+# Entregables del portal
+entregables:
+  readme: README.md
+  bitacora_s1: docs/seguimientos/S1.md
+  bitacora_s2: docs/seguimientos/S2.md
+  bitacora_s3: docs/seguimientos/S3.md
+  bitacora_s4: docs/seguimientos/S4.md
+  arquitectura: docs/arquitectura/arquitectura-v1.md
+  modelo_datos: docs/arquitectura/modelo-datos-v1.md
+  decisiones: docs/decisiones.md
+  pruebas: docs/pruebas.md
+  mediciones: docs/mediciones/mediciones_s3.md
+  instalacion: docs/INSTALACION.md
+  despliegue: docs/DEPLOY_VIRTUALMIN.md
+  changelog: CHANGELOG.md

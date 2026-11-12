@@ -30,12 +30,15 @@ from src.common.rules import apply_rules
 
 def test_apply_rules_with_dead_redis():
     """Si Redis tira ConnectionError, apply_rules no debe propagarlo."""
-    # Mock de Redis que SIEMPRE tira ConnectionError
-    dead_redis = MagicMock(spec=redis_lib.Redis)
-    dead_redis.incr.side_effect = redis_lib.ConnectionError("mock: redis down")
-    dead_redis.expire.side_effect = redis_lib.ConnectionError("mock: redis down")
-    dead_redis.zincrby.side_effect = redis_lib.ConnectionError("mock: redis down")
-    dead_redis.publish.side_effect = redis_lib.ConnectionError("mock: redis down")
+    # Mock de Redis que SIEMPRE tira ConnectionError en cualquier método.
+    # No usamos `spec=redis_lib.Redis` porque conftest.py puede haberlo
+    # parcheado a una factory de fakeredis, y MagicMock(spec=func) rompe
+    # la introspección. En su lugar, interceptamos TODO atributo.
+    dead_redis = MagicMock()
+    err = redis_lib.ConnectionError("mock: redis down")
+    for method in ("incr", "expire", "zincrby", "publish", "set",
+                   "setex", "scan_iter", "delete", "get", "exists"):
+        getattr(dead_redis, method).side_effect = err
 
     db = mongomock.MongoClient()["test"]
 

@@ -4,7 +4,8 @@ Diseño:
     - UN solo usuario admin, configurado por .env (AUTH_USER / AUTH_PASS).
     - Si AUTH_USER NO está definido → la auth está desactivada (modo dev).
       Útil para que los tests y el desarrollo local sigan funcionando sin login.
-    - Sesión por cookie firmada con AUTH_SECRET (itsdangerous).
+    - Sesión por cookie firmada con AUTH_SECRET usando HMAC-SHA256 de la stdlib
+      (hmac + hashlib). NO depende de itsdangerous ni passlib.
     - Middleware ASGI que redirige a /login si no está autenticado.
     - Rutas excluidas de auth: /login, /logout, /static/*, /api/health.
 

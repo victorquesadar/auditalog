@@ -1,0 +1,26 @@
+{
+  "sqlite": {
+    "sin \u00edndice": {
+      "insert_total_s": 0.126,
+      "insert_per_row_us": 1.3,
+      "query_avg_ms": 7.328,
+      "explain": [
+        "3 | 0 | 0 | SCAN events"
+      ]
+    },
+    "con \u00edndice": {
+      "insert_total_s": 0.301,
+      "insert_per_row_us": 3.0,
+      "query_avg_ms": 0.01,
+      "explain": [
+        "3 | 0 | 0 | SEARCH events USING COVERING INDEX idx_events_ip_ts (ip=? AND ts>? AND ts<?)"
+      ]
+    },
+    "query_speedup": 732.8
+  },
+  "mongo": {
+    "skipped": "Mongo no disponible: localhost:27017: [Errno 111] Connection refused (configured timeouts: socketTimeoutMS: 20000.0ms, co"
+  },
+  "n_rows": 100000,
+  "run_at": "2026-11-12T03:47:06.022649+00:00"
+}

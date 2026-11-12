@@ -40,3 +40,16 @@ build/
 
 # Docker
 docker-compose.override.yml
+
+# ------------------------------------------------------------------
+# Bases GeoIP: cada desarrollador las descarga local con
+#   python scripts/download_geoip.py
+# No se versionan por tamaño y porque la licencia MaxMind no permite
+# redistribución libre. DB-IP Lite (default) tiene una licencia CC-BY
+# más permisiva pero igual no corresponde en el repo.
+# ------------------------------------------------------------------
+data/geoip/*.mmdb
+data/geoip/*.tar.gz
+
+# Dump de Redis que puede quedar al correr tests sin daemonize
+dump.rdb

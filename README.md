@@ -130,8 +130,11 @@ en tiempo real desde su navegador.
 
 ## 6. Capturas
 
-> Las capturas viven en `docs/img/` (pendientes de incorporar en el próximo
-> commit por el integrante encargado).
+> Las capturas viven en `docs/img/`
+
+https://github.com/user-attachments/assets/3bf62c42-f787-432f-b444-0b31fa7d4dea
+
+
 
 - `docs/img/dashboard.png` — portada con eventos, alertas, charts por país y ASN.
 - `docs/img/geo.png` — página `/geo` con dona por país y barras por ASN.

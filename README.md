@@ -132,10 +132,6 @@ en tiempo real desde su navegador.
 
 > Las capturas viven en `docs/img/`
 
-https://github.com/user-attachments/assets/3bf62c42-f787-432f-b444-0b31fa7d4dea
-
-
-
 - `docs/img/dashboard.png` — portada con eventos, alertas, charts por país y ASN.
 - `docs/img/geo.png` — página `/geo` con dona por país y barras por ASN.
 - `docs/img/alertas.png` — alertas críticas de `f2b_ban_v1`.
@@ -256,8 +252,7 @@ En CI se usa `fakeredis` como fallback (ver `tests/conftest.py`).
 
 ## 13. Video
 
-Video demo (3-5 min): **pendiente — grabar y enlazar aquí** antes del
-cierre del semestre.
+https://github.com/user-attachments/assets/3bf62c42-f787-432f-b444-0b31fa7d4dea
 
 ## 14. Integrantes
 
